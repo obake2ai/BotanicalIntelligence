@@ -26,3 +26,14 @@ BotanicalIntelligence/
 ```
 
 コードの詳細は [code/README.md](code/README.md) を参照してください。
+
+## License
+
+- **コード（`code/`）:** [Apache License 2.0](LICENSE)
+- **ドキュメント（`docs/`）:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+詳細は [NOTICE](NOTICE) を参照してください。
+
+## Acknowledgments
+
+本プロジェクトは CCBT（シビック・クリエイティブ・ベース東京）2025年度アーティスト・フェロー・プログラムの支援を受けて制作されました。
