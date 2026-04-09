@@ -1,0 +1,5 @@
+.DS_Store
+
+# Nested standalone git repositories — kept locally for cross-reference,
+# tracked independently in their own remotes.
+related/
