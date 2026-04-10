@@ -14,7 +14,7 @@
 
 ## Code Attribution
 
-`code/` ディレクトリのソースコードは [rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto](https://github.com/rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto)（kishiブランチ）を元に移植したものです。デバイス間通信・信号処理の実装を中嶋亮介氏（[@rystylee](https://github.com/rystylee)）、LLM推論・生成アーキテクチャの実装を岸が担当しました。
+`code/` ディレクトリのソースコードは [rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto](https://github.com/rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto)（kishiブランチ）を元に移植したものです。本プロジェクトは岸裕真によるコンセプトのもと、デバイス間通信・信号処理、およびLLM推論・音声出力パイプラインの基盤実装を中嶋亮介氏（[@rystylee](https://github.com/rystylee)）が担当し、岸が植物センサー入力をLLM推論に反映させる Soft-Prefix 機構の実装、ならびに全体の調整を行いました。
 
 ## Structure
 
