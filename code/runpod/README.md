@@ -33,7 +33,7 @@ M5Stack (10.0.0.1~100)          Ubuntu (10.0.0.200)              RunPod (GPU)
 
 ```bash
 # Ubuntu側で接続テスト
-ssh dmw81eq7mnro4b-644113b7@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh <POD_ID>-<USER_HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
 ```
 
 ### 2. Ubuntu 側の環境構築
@@ -48,7 +48,7 @@ source .venv/bin/activate
 
 ```bash
 # RunPodにSSHして、リポジトリをclone
-ssh dmw81eq7mnro4b-644113b7@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh <POD_ID>-<USER_HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
 mkdir -p ~/dev && cd ~/dev
 git clone <repo_url> CCBT-2025-Parallel-Botanical-Garden-Proto
 

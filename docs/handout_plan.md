@@ -10,7 +10,7 @@
 | センサー説明：夜間（クロロフィル） | 高山先生 | 中 | 200-300 | 完了 | → technical_description.md に収録 |
 | マップ | 八木 | 低 | — | 確認中 | いらないかも |
 | クレジット | 岸 | 高 | — | 確認中 | リリース時に制作済 |
-| アブストラクトエンジンについて | tomoyo@rhizomatiks.com | 高 | — | 確認中 | 組織名・見出し・説明・URLの構成 |
+| アブストラクトエンジンについて | Abstract Engine | 高 | — | 確認中 | 組織名・見出し・説明・URLの構成 |
 | 技術説明 | 岸 | 低 | — | — | ハンドアウトに入れない |
 | 平行森林概要（対内説明テキスト） | 岸 | 低 | — | — | プレス資料制作参考用。ハンドアウトに入れない |
 
@@ -23,5 +23,5 @@ http://abstractengine.com/
 
 ## 連絡先
 
-- Abstract Engine: tomoyo@rhizomatiks.com
-- アーツカウンシル東京: i-hara@artscouncil-tokyo.jp
+- Abstract Engine: http://abstractengine.com/
+- アーツカウンシル東京 / CCBT: https://ccbt.rekibun.or.jp/
