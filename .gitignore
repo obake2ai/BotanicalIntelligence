@@ -3,3 +3,6 @@
 # Nested standalone git repositories — kept locally for cross-reference,
 # tracked independently in their own remotes.
 related/
+
+# Large submission video bundles (mirrored to Vimeo; archived locally only).
+docs/lacma-2026/submission/video/
