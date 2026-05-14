@@ -41,7 +41,7 @@ BotanicalIntelligence/
 
 ## ドキュメント
 
-- 📜 [アーティスト・ステイトメント](docs/statement_parallel-forests.md) — 『平行森林』のコンセプトとステイトメント
+- 📜 アーティスト・ステイトメント: [日本語](docs/statement_parallel-forests.md) · [English](docs/statement_parallel-forests_en.md)
 - ⚙ [技術説明](docs/technical_description.md) — システム・アーキテクチャとセンサーの説明
 - 🌲 [展覧会情報](docs/exhibition_parallel-forests.md) — 『平行森林』会場・スケジュール・クレジット
 

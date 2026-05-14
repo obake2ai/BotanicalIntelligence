@@ -41,7 +41,7 @@ The codebase under `code/` is detailed in [code/README.md](code/README.md).
 
 ## Documentation
 
-- 📜 [Artist statement (JA)](docs/statement_parallel-forests.md) — concept and statement for *Parallel Forests*
+- 📜 Artist statement: [English](docs/statement_parallel-forests_en.md) · [日本語](docs/statement_parallel-forests.md)
 - ⚙ [Technical description (JA)](docs/technical_description.md) — system architecture and sensor explanations
 - 🌲 [Exhibition info (JA)](docs/exhibition_parallel-forests.md) — *Parallel Forests* venue, schedule, credits
 
