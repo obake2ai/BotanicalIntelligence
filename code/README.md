@@ -1,6 +1,10 @@
-# CCBT-2025-Parallel-Botanical-Garden-Proto
+# Botanical Intelligence — Edge System (`code/`)
 
-M5Stack LLM Compute Kit上で動作する分散型Botanical Intelligence (BI)システム。複数のBIデバイスがOSC経由で相互通信しながら、LLMによる協調的な詩的テキスト生成とTTSによる音声出力を行います。
+> Top-level project: [Botanical Intelligence](../README.md) ([日本語](../README.ja.md))
+
+M5Stack LLM Compute Kit 上で動作する分散型 Botanical Intelligence (BI) システム。複数のBIデバイスがOSC経由で相互通信しながら、LLMによる協調的な詩的テキスト生成とTTSによる音声出力を行います。
+
+このディレクトリのソースコードは [rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto](https://github.com/rystylee/CCBT-2025-Parallel-Botanical-Garden-Proto) (kishi ブランチ) を元に移植されています。詳細な帰属情報は repo ルートの [NOTICE](../NOTICE) を参照してください。
 
 ---
 
