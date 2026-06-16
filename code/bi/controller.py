@@ -130,7 +130,12 @@ class BIController:
 
         # Generate 2-3 tokens with LLM
         try:
-            sp_b64 = override_soft_prefix_val(self.input_buffer[-1].soft_prefix_b64, self.config)
+            # Layer-1 fix (2026-06-16): use the plant-sensor soft_prefix as-is.
+            # Previously override_soft_prefix_val() ignored the received value and
+            # substituted a random config val, so plant state never reached the LLM.
+            sp_b64 = self.input_buffer[-1].soft_prefix_b64
+            if not sp_b64:
+                sp_b64 = override_soft_prefix_val(sp_b64, self.config)  # fallback: random val
             generated_text = await self.llm_client.generate_text(
                 query=concatenated_text,
                 soft_prefix_b64=sp_b64,

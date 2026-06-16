@@ -27,6 +27,8 @@ def make_random_soft_prefix_b64(config: dict | None = None) -> str:
     if config is not None:
         vals = config.get("stack_flow_llm", {}).get("soft_prefix_vals", VALS)
     v = random.choice(vals)
+    return make_soft_prefix_b64_constant(P, H, v)
+
 
 def override_soft_prefix_val(sp_b64: str, config: dict | None = None) -> str:
     """Replace the val in a received soft_prefix with a random val from config."""
