@@ -35,6 +35,9 @@ class BIController:
         # Waiting audio loop
         self._waiting_proc: Optional[subprocess.Popen] = None
         self._waiting_loop_task: Optional[asyncio.Task] = None
+        # Overlay loop (mixed mode): occasionally layer alt-prefix audio over the base loop
+        self._overlay_proc: Optional[subprocess.Popen] = None
+        self._overlay_loop_task: Optional[asyncio.Task] = None
 
         # Initialize clients
         self.llm_client = StackFlowLLMClient(config)
@@ -141,7 +144,9 @@ class BIController:
                 soft_prefix_b64=sp_b64,
                 soft_prefix_len=P,
             )
-            cleaned = cleanup_ng_words(generated_text)
+            # Alien-token output already went through llm_client's own postprocessing;
+            # the NG-word filter assumes human sentence structure.
+            cleaned = generated_text if self.llm_client.is_alien else cleanup_ng_words(generated_text)
             self.generated_text = cleaned
             self.tts_text = cleaned
             # self.generated_text = generated_text.strip()
@@ -280,8 +285,23 @@ class BIController:
 
     # ========== Waiting audio loop ==========
 
+    def _collect_waiting_files(self, waiting_dir: str, prefix: str) -> list:
+        """Glob {prefix}*.wav / {prefix}*.mp3 under waiting_dir, sorted."""
+        import glob
+
+        files = []
+        for ext in ("wav", "mp3"):
+            files.extend(glob.glob(os.path.join(waiting_dir, f"{prefix}*.{ext}")))
+        files.sort()
+        return files
+
     async def _start_waiting_loop(self):
-        """Start looping waiting audio in background."""
+        """Start looping waiting audio in background.
+
+        mode "single" (legacy): pick base (AE_) or alt prefix by device_id last digit.
+        mode "mixed": loop the base prefix (AE_) continuously AND layer the overlay
+        prefix (waiting_) on top at random intervals (dmix mixes both streams).
+        """
         # Don't start if already running
         if self._waiting_loop_task is not None and not self._waiting_loop_task.done():
             return
@@ -289,49 +309,61 @@ class BIController:
         audio_config = self.config.get("audio", {})
         playback_device = audio_config.get("playback_device", "")
         waiting_dir = audio_config.get("waiting_audio_dir", "audio")
+        target_sr = audio_config.get("sample_rate", 48000)
+        target_ch = audio_config.get("channels", 2)
+        target_fmt = audio_config.get("sample_format", "s16")
+        base_prefix = audio_config.get("waiting_audio_prefix", "AE_")
+        mode = audio_config.get("waiting_audio_mode", "single")
 
-        # Per-device prefix selection based on last digit of device_id
+        if mode == "mixed":
+            overlay_prefix = audio_config.get("waiting_overlay_prefix", "waiting_")
+            base_files = self._collect_waiting_files(waiting_dir, base_prefix)
+            overlay_files = self._collect_waiting_files(waiting_dir, overlay_prefix)
+            base_files = await asyncio.to_thread(
+                self._ensure_waiting_audio_format, base_files, target_sr, target_ch, target_fmt
+            )
+            overlay_files = await asyncio.to_thread(
+                self._ensure_waiting_audio_format, overlay_files, target_sr, target_ch, target_fmt
+            )
+            if not base_files:
+                logger.warning(f"No base waiting audio: {waiting_dir}/{base_prefix}*")
+                return
+            logger.info(
+                f"Starting MIXED waiting audio: base={len(base_files)}({base_prefix}) "
+                f"overlay={len(overlay_files)}({overlay_prefix})"
+            )
+            self._waiting_loop_task = asyncio.create_task(self._waiting_loop(base_files, playback_device))
+            if overlay_files:
+                imin = audio_config.get("waiting_overlay_interval_min", 20)
+                imax = audio_config.get("waiting_overlay_interval_max", 60)
+                self._overlay_loop_task = asyncio.create_task(
+                    self._overlay_loop(overlay_files, playback_device, imin, imax)
+                )
+            return
+
+        # single mode (legacy): per-device prefix selection based on last digit of device_id
         device_id = audio_config.get("device_id", 0)
         alt_digits = audio_config.get("waiting_audio_alt_digits", [])
         if (device_id % 10) in alt_digits:
             waiting_prefix = audio_config.get("waiting_audio_alt_prefix", "CF_")
             logger.info(f"Device {device_id} (last digit {device_id % 10}) -> alt waiting prefix: {waiting_prefix}")
         else:
-            waiting_prefix = audio_config.get("waiting_audio_prefix", "waiting_")
+            waiting_prefix = base_prefix
 
-        # Collect matching files
-        import glob
-
-        patterns = [
-            os.path.join(waiting_dir, f"{waiting_prefix}*.wav"),
-            os.path.join(waiting_dir, f"{waiting_prefix}*.mp3"),
-        ]
-        files = []
-        for pat in patterns:
-            files.extend(glob.glob(pat))
-        files.sort()
-
+        files = self._collect_waiting_files(waiting_dir, waiting_prefix)
         if not files:
             logger.warning(f"No waiting audio files found: {waiting_dir}/{waiting_prefix}*")
             return
 
-        # Ensure all files match dmixer format (48000Hz, 2ch, s16)
-        target_sr = audio_config.get("sample_rate", 48000)
-        target_ch = audio_config.get("channels", 2)
-        target_fmt = audio_config.get("sample_format", "s16")
+        # Ensure all files match dmixer format
         files = await asyncio.to_thread(
-            self._ensure_waiting_audio_format,
-            files,
-            target_sr,
-            target_ch,
-            target_fmt,
+            self._ensure_waiting_audio_format, files, target_sr, target_ch, target_fmt
         )
-
         if not files:
             logger.warning("No valid waiting audio files after format conversion")
             return
 
-        logger.info(f"Starting waiting audio loop: {len(files)} files " f"in {waiting_dir}/ prefix={waiting_prefix}")
+        logger.info(f"Starting waiting audio loop: {len(files)} files in {waiting_dir}/ prefix={waiting_prefix}")
         self._waiting_loop_task = asyncio.create_task(self._waiting_loop(files, playback_device))
 
     def _ensure_waiting_audio_format(
@@ -433,8 +465,57 @@ class BIController:
             logger.debug("Waiting audio loop cancelled")
             raise
 
+    async def _overlay_loop(self, files: list, playback_device: str, interval_min: float, interval_max: float):
+        """Mixed mode: wait a random interval, then play one overlay file over the base loop."""
+        import random
+
+        try:
+            while True:
+                await asyncio.sleep(random.uniform(interval_min, interval_max))
+                path = random.choice(files)
+                if playback_device:
+                    cmd = ["aplay", "-D", playback_device, str(path)]
+                else:
+                    card = self.config.get("audio", {}).get("tinyplay_card", 0)
+                    device = self.config.get("audio", {}).get("tinyplay_device", 1)
+                    cmd = ["tinyplay", f"-D{card}", f"-d{device}", str(path)]
+
+                logger.debug(f"Overlay audio play: {' '.join(cmd)}")
+                proc = await asyncio.to_thread(
+                    lambda: subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                )
+                self._overlay_proc = proc
+                ret = await asyncio.to_thread(proc.wait)
+                self._overlay_proc = None
+
+                if ret != 0:
+                    stderr = proc.stderr.read().decode(errors="replace").strip()
+                    logger.warning(f"Overlay audio playback failed (rc={ret}): {stderr}")
+        except asyncio.CancelledError:
+            logger.debug("Overlay audio loop cancelled")
+            raise
+
     async def _stop_waiting_loop(self):
-        """Stop the waiting audio loop and wait for clean shutdown."""
+        """Stop the waiting audio loop (and overlay, if mixed) and wait for clean shutdown."""
+        # Stop overlay loop first (mixed mode)
+        if self._overlay_loop_task is not None and not self._overlay_loop_task.done():
+            self._overlay_loop_task.cancel()
+            if self._overlay_proc is not None:
+                try:
+                    self._overlay_proc.terminate()
+                    await asyncio.to_thread(self._overlay_proc.wait)
+                except Exception:
+                    try:
+                        self._overlay_proc.kill()
+                    except Exception:
+                        pass
+                self._overlay_proc = None
+            try:
+                await self._overlay_loop_task
+            except asyncio.CancelledError:
+                pass
+        self._overlay_loop_task = None
+
         if self._waiting_loop_task is None or self._waiting_loop_task.done():
             self._waiting_proc = None
             self._waiting_loop_task = None

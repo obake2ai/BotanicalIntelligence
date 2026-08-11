@@ -41,7 +41,16 @@
         "waiting_audio_alt_prefix": "waiting_",
         "_waiting_audio_alt_prefix_note": "代替デバイス用のファイルプレフィックス。同じdiる内でプレフィックス違いで分離",
 
-    "playback_device": "dmixer",
+        "waiting_audio_mode": "mixed",
+        "_waiting_audio_mode_note": "single=device_id末尾でAE_/waiting_を排他選択(従来)。mixed=base(AE_環境音)を常時ループ+overlay(waiting_声系)をランダム間隔で重ねる",
+        "waiting_overlay_prefix": "waiting_",
+        "_waiting_overlay_prefix_note": "mixed時、base(waiting_audio_prefix=AE_)に重ねる声系のプレフィックス",
+        "waiting_overlay_interval_min": 20,
+        "waiting_overlay_interval_max": 60,
+        "_waiting_overlay_interval_note": "mixed時、overlayを重ねる間隔の最小/最大秒。この範囲のランダム待機後に1ファイル再生。短くすると頻繁に声が載る",
+
+    "playback_device": "plug:dmixer",
+    "_playback_device_note": "plug:dmixer = dmix(hw:0,1 @32000Hz)へ自動リサンプル再生。生dmixerだと48000素材がピッチダウンするため plug 経由にする",
     "tinyplay_card": 0,
     "tinyplay_device": 1,
     "sample_rate": 48000,
@@ -242,6 +251,13 @@
       "model": "TinySwallow-1.5B",
       "system_prompt": "植物的翻译者。用短词串联森林之诗。",
       "instruction_prompt": "续: "
+    },
+    "alien": {
+      "model": "tiny_qwen2",
+      "_model_note": "2026-06-26 PoC で device99 に置かれたモデルディレクトリ名 (memory reference_bi_npu_custom_model_poc)。実機再接続時に /opt/m5stack/data/ の実在を要確認、未検証の値",
+      "system_prompt": "",
+      "instruction_prompt": "",
+      "alien": true
     }
   }
 }

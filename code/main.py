@@ -27,6 +27,12 @@ def parse_args():
     parser.add_argument(
         "--listen-host", type=str, default=None, help="Override OSC listen address (e.g. 0.0.0.0 for test env)"
     )
+    parser.add_argument(
+        "--lang-override",
+        type=str,
+        default=None,
+        help="Override the device-id-resolved language (e.g. 'alien' for a non-human-token model)",
+    )
     return parser.parse_args()
 
 
@@ -130,8 +136,10 @@ async def async_main():
     config["targets"] = targets
     config.setdefault("audio", {})["device_id"] = device_id  # for per-node voice character
 
-    # Auto-detect language from device ID
+    # Auto-detect language from device ID, with an explicit override for non-human-token devices
     lang = resolve_lang_from_device_id(device_id)
+    if opt.lang_override:
+        lang = opt.lang_override
     config.setdefault("common", {})["lang"] = lang
     logger.info(f"Language: {lang} (device_id={device_id}, last_digit={device_id % 10})")
 

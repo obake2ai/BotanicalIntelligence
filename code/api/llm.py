@@ -31,16 +31,17 @@ class StackFlowLLMClient:
     def set_params(self, config: dict):
         lang = config.get("common").get("lang")
         self.lang = lang
-        # self.model = LLM_SETTINGS.get(lang).get("model")
-        # self.max_tokens = config.get("stack_flow_llm").get("max_tokens")
-        # self.system_prompt = LLM_SETTINGS.get(lang).get("system_prompt")
-        # self.instruction_prompt = LLM_SETTINGS.get(lang).get("instruction_prompt")
-        # LLM always uses Japanese prompts (TinySwallow is Japanese-only)
-        ja_settings = LLM_SETTINGS.get("ja")
-        self.model = ja_settings.get("model")
+        settings = LLM_SETTINGS.get(lang)
+        if settings is None:
+            logger.warning(f"No llm_settings for lang={lang!r}, falling back to ja")
+            settings = LLM_SETTINGS.get("ja")
+        self.model = settings.get("model")
         self.max_tokens = config.get("stack_flow_llm").get("max_tokens")
-        self.system_prompt = ja_settings.get("system_prompt")
-        self.instruction_prompt = ja_settings.get("instruction_prompt")
+        self.system_prompt = settings.get("system_prompt", "")
+        self.instruction_prompt = settings.get("instruction_prompt", "")
+        # Alien-token devices generate non-human vocab: skip translation and the
+        # human-language postprocessing (NG-word filter / particle-break truncation).
+        self.is_alien = settings.get("alien", False)
 
         logger.info("[LLM info]")
         logger.info(f"lang: {lang}")
@@ -48,6 +49,7 @@ class StackFlowLLMClient:
         logger.info(f"max_tokens: {self.max_tokens}")
         logger.info(f"system_prompt: {self.system_prompt}")
         logger.info(f"instruction_prompt: {self.instruction_prompt}")
+        logger.info(f"is_alien: {self.is_alien}")
         logger.info("")
 
     async def generate_text(
@@ -55,7 +57,6 @@ class StackFlowLLMClient:
     ) -> str:
         logger.info(f"query: {query}")
 
-        # Input is always Japanese, pass directly to LLM
         prompt = self.instruction_prompt + query
         logger.info(f"prompt: {prompt}")
         if soft_prefix_b64 is not None:
@@ -67,8 +68,9 @@ class StackFlowLLMClient:
 
         output = self._postprocess(output, query)
 
-        # Post-generation: translate Japanese output to device language
-        if self.lang != "ja" and output:
+        # Post-generation: translate Japanese output to device language.
+        # Alien-token output has no source language to translate from.
+        if not self.is_alien and self.lang != "ja" and output:
             ja_text = output
             output = await asyncio.to_thread(self._translate_sync, output)
             logger.info(f"Post-translate ja->({self.lang}): {ja_text} -> {output}")
@@ -100,7 +102,7 @@ class StackFlowLLMClient:
             self.sock.setblocking(True)
 
         text = raw.decode("utf-8", errors="replace")
-        logger.debug(f"LLM raw response: {len(text)} chars")
+        logger.debug(f"LLM raw response ({len(text)} chars): {text!r}")
 
         # Extract all "delta":"..." values via regex
         output = ""
@@ -255,6 +257,10 @@ class StackFlowLLMClient:
             return en_text
 
     def _postprocess(self, text: str, query: str = "") -> str:
+        if self.is_alien:
+            # No role-prefix, preamble, or input-echo conventions for non-human vocab
+            return self._truncate(text.strip())
+
         from api.utils import load_ng_words
 
         # Remove role prefix (e.g. "詩人:")
@@ -322,6 +328,10 @@ class StackFlowLLMClient:
             return text
 
         cut = text[:max_chars]
+
+        if self.is_alien:
+            # No human punctuation/particle break points to search for
+            return cut.strip()
 
         if self.lang in ("ja", "zh"):
             breaks = self._BREAKS_CJK

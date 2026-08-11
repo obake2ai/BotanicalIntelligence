@@ -2,7 +2,9 @@
 import base64, random, struct
 
 P, H = 1, 1536
-VALS = [0.0, 1e-4, 1e-3, 1e-2]
+# mode A ランダム用。sensor_to_sp_b64 の離散値と統一 (2026-06-17 device99 実機整合)。
+# エンコードは bi/utils.py 互換、値域のみ新スケール [0,0.1,1,10]。
+VALS = [0.0, 0.1, 1.0, 10.0]
 
 def f32_to_bf16_u16(x: float) -> int:
     return (struct.unpack("<I", struct.pack("<f", x))[0] >> 16) & 0xFFFF
@@ -15,14 +17,16 @@ def make_random_sp_b64(p: int = P, h: int = H) -> str:
     return make_sp_b64(random.choice(VALS), p, h)
 
 def sensor_to_sp_b64(value: float, p: int = P, h: int = H) -> str:
-    """0~1 → 離散VALS=[0,1e-3,1e-2,1e-1]
+    """0~1 → 離散VALS=[0,0.1,1,10]
 
-    TinySwallow-1.5B/H=1536 用に上シフト (2026-06-16)。旧 [0,1e-4,1e-3,1e-2] は
-    下2段がほぼ無変化で実質2段階だった。感度曲線で 1e-1 でも崩壊せず詩的に変化を確認。
+    実機スイープ (2026-06-17, device99) で実効域 ≈(0,~100]、高応答(沈黙は)・豊か(光は)で
+    4段階フルに振れることを確認し [0,1e-3,1e-2,1e-1] から上シフト。中応答(森が)は上段が飽和、
+    暴れ系(水が)は val=10 で baseline に逆戻りする傾向。6/19 現場で AE 実 RMS 分布に合わせ
+    閾値・刻みを微調整予定。
     """
     v = max(0.0, min(1.0, value))
     if   v < 0.25: s = 0.0
-    elif v < 0.5:  s = 1e-3
-    elif v < 0.75: s = 1e-2
-    else:          s = 1e-1
+    elif v < 0.5:  s = 0.1
+    elif v < 0.75: s = 1.0
+    else:          s = 10.0
     return make_sp_b64(s, p, h)

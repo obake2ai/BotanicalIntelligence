@@ -76,6 +76,11 @@ def make_target(did: int, port: int = 8000) -> TargetDevice:
 def make_targets(ids, port: int = 8000) -> List[TargetDevice]:
     return [make_target(d, port) for d in ids]
 
+def make_targets_from_ips(ips, port: int = 8000) -> List[TargetDevice]:
+    """IP 直指定で TargetDevice を作る (現場の実 IP が 10.0.0.{id} 体系でない場合用)。
+    device_id は 1-based の連番を仮置き (送信先の識別ログ用のみ)。"""
+    return [TargetDevice(device_id=i, ip=ip, port=port) for i, ip in enumerate(ips, 1)]
+
 
 def load_default_config() -> InputControllerConfig:
     """ch0→1-10, ch1→11-20, ch2→21-30, ch3→31-40, sensor→41-50"""

@@ -6,3 +6,12 @@ related/
 
 # Large submission video bundles (mirrored to Vimeo; archived locally only).
 docs/lacma-2026/submission/video/
+
+# Event-specific deployment configs (venue network layout, node coordinates,
+# per-event runners). Kept locally; not part of the general codebase.
+code/config/*_glo.*
+code/config/networks_glo.csv
+code/input_controller/run_voice_glo.py
+
+# Scratch verification probes (marked local-only in their own docstrings).
+code/tools/bi-check/
