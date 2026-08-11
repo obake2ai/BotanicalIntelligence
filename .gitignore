@@ -13,5 +13,6 @@ code/config/*_glo.*
 code/config/networks_glo.csv
 code/input_controller/run_voice_glo.py
 
-# Scratch verification probes (marked local-only in their own docstrings).
-code/tools/bi-check/
+# Scratch verification probe (marked local-only in its own docstring).
+# The rest of code/tools/bi-check/ is tracked.
+code/tools/bi-check/probe_soft_prefix.py
