@@ -15,44 +15,117 @@ from pythonosc import udp_client
 import paramiko
 import threading, time, subprocess, getpass
 import os
+import platform
+import shutil
 import bi_logger
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.urandom(24).hex()
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
-NODE_PREFIX = "10.0.0"
-NODE_COUNT  = 100
+# MANS uses sparse IDs, so the fleet range must be widenable without a code edit.
+# Defaults keep the CCBT 100-node behaviour untouched.
+NODE_PREFIX = os.environ.get("BI_NODE_PREFIX", "10.0.0")
+NODE_COUNT  = int(os.environ.get("BI_NODE_COUNT", "100"))
 OSC_PORT    = 9000
 SSH_USER    = "root"
 GIT_DIR     = "/root/dev/CCBT-2025-Parallel-Botanical-Garden-Proto"
-SOUND_CMD   = "aplay -D dmixer /usr/local/m5stack/audio_check.wav"
+# Sound check across a mixed fleet:
+#  - production nodes have aplay; plug:dmixer resamples the mono 44100Hz
+#    bi_check_XXX.wav to the dmixer's stereo 32000Hz (raw dmixer rejects mono).
+#  - speaker nodes (m5stack-LLM) have no aplay: fall back to tinyplay on the
+#    i2s codec (card0/device1, stereo 32000Hz), unmuting DAC first since it
+#    re-mutes after every clip. Their audio_check.wav must be stereo 32000Hz.
+#    LD_LIBRARY_PATH is set explicitly: a non-interactive ssh shell lacks the
+#    lib dirs that adb's environment has, so tinyplay/tinymix otherwise fail
+#    with "libtinyalsa.so.2: cannot open shared object file".
+_SOUND_AWARE = (
+    "if command -v aplay >/dev/null 2>&1; then "
+    "aplay -D plug:dmixer /usr/local/m5stack/audio_check.wav; "
+    "else export LD_LIBRARY_PATH=/opt/usr/lib:/opt/lib:/usr/local/lib:/usr/lib:/soc/lib; "
+    "tinymix set 'DAC MUTE' 0 >/dev/null 2>&1; "
+    "/opt/usr/bin/tinyplay /usr/local/m5stack/audio_check.wav -D 0 -d 1; fi"
+)
+SOUND_CMD   = os.environ.get("BI_SOUND_CMD", _SOUND_AWARE)
 LED_SERVER_SESSION = "bi_led_srv"
 LED_SERVER_CMD = f"cd {GIT_DIR} && uv run python pca9685_osc_led_server.py --port {OSC_PORT}"
 LED_STEPS   = 40
 LED_UP_SEC  = 2.0
 LED_DN_SEC  = 2.0
-SSH_PASS = getpass.getpass("SSH Password: ")
+SSH_PASS = os.environ.get("BI_SSH_PASS") or getpass.getpass("SSH Password: ")
+
+# ── MANS: cluster map 駆動のフリート定義 ──
+# cluster_map CSV (id,cluster[,note]) があればそれを正とし、
+# 無ければ CCBT の 10 クラスタ × 10 台に戻る。ID = IP 末尾は不変。
+import json as _json
+import csv as _csv
+
+CLUSTER_MAP_CSV = os.environ.get(
+    "BI_CLUSTER_MAP",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "cluster_map_mans.csv"),
+)
+RUN_SERVICE = "ccbt-bi"   # 展示 autostart サービス (未導入機は tmux にフォールバック)
+
+
+def _load_clusters():
+    try:
+        groups = {}
+        with open(CLUSTER_MAP_CSV, newline="", encoding="utf-8") as f:
+            for row in _csv.DictReader(f):
+                raw = (row.get("id") or "").strip()
+                name = (row.get("cluster") or "").strip()
+                if raw.isdigit() and name and 1 <= int(raw) <= NODE_COUNT:
+                    groups.setdefault(name, []).append(int(raw))
+        if groups:
+            return [
+                {"l": f"CLUSTER {name} — {len(ids)} nodes", "ids": sorted(ids)}
+                for name, ids in sorted(groups.items())
+            ]
+    except FileNotFoundError:
+        pass
+    return [
+        {"l": f"CLUSTER {i + 1:02d} — NODE {i * 10 + 1}–{i * 10 + 10}",
+         "ids": list(range(i * 10 + 1, i * 10 + 11))}
+        for i in range(10)
+    ]
+
+
+CLUSTERS = _load_clusters()
+NODE_IDS = [n for c in CLUSTERS for n in c["ids"]]
+CLUSTERS_JS = _json.dumps(CLUSTERS, ensure_ascii=False)
+TERMINAL_OPTGROUPS = "".join(
+    '<optgroup label="{}">{}</optgroup>'.format(
+        c["l"],
+        "".join(f'<option value="{n}">NODE {n} — 10.0.0.{n}</option>' for n in c["ids"]),
+    )
+    for c in CLUSTERS
+)
+BROADCAST_CLUSTER_OPTIONS = "".join(
+    f'<option value="{i + 1}">{c["l"]}</option>' for i, c in enumerate(CLUSTERS)
+)
 
 # RUN ログファイルパス（各ノード上）
-RUN_LOG_FILE = "/tmp/bi_run.log"
+RUN_LOG_FILE = "/tmp/bi_main.log"  # ccbt-bi.service の wrapper と同じファイル
 
 TMUX_CONF = {
     "run": {
         "session": "bi_main",
         # 2>&1 | tee でファイルにも書き出す → tmux スクロールバック依存を回避
         # tee -a で追記モード（再起動時も続きから読める）
-        "cmd": f"cd {GIT_DIR} && git stash; git pull; uv run python main.py 2>&1 | tee -a {RUN_LOG_FILE}",
+        "cmd": f"cd {GIT_DIR} && uv run python main.py 2>&1 | tee -a {RUN_LOG_FILE}",
     },
     "llm": {
         "session": "bi_llm",
-        "cmd": f"cd {GIT_DIR} && git stash; git pull; chmod +x scripts/check_llm.py && ./scripts/check_llm.py",
+        "cmd": f"cd {GIT_DIR} && chmod +x scripts/check_llm.py && ./scripts/check_llm.py",
     },
     "tts": {
         "session": "bi_tts",
-        "cmd": f"cd {GIT_DIR} && git stash; git pull; uv run python scripts/check_tts.py",
+        "cmd": f"cd {GIT_DIR} && uv run python scripts/check_tts.py",
     },
 }
-SEND_SCRIPT = "/home/yuma/dev/CCBT-2025-Parallel-Botanical-Garden-Proto/scripts/send_bi_input.py"
+SEND_SCRIPT = os.environ.get(
+    "BI_SEND_SCRIPT",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "send_bi_input.py"),
+)
 
 PAGES = ["system", "led", "sound", "llm", "tts", "run"]
 jobs = {p: {n: {"status":"idle","msg":""} for n in range(1,NODE_COUNT+1)} for p in PAGES}
@@ -224,9 +297,44 @@ def is_running(page, num):
     return jobs[page][num]["status"] == "running"
 def node_ip(num):
     return f"{NODE_PREFIX}.{num}"
+# ping -W: seconds on Linux, milliseconds on macOS. Without this the mac
+# monitor asks for a 1ms reply and drops every latency reading to "ok".
+PING_WAIT = ["-W", "1000"] if platform.system() == "Darwin" else ["-W", "1"]
+
+# ── adb jump-bridge mode (fallback when the monitor PC has no ethernet) ──
+# BI_JUMP_PORT = local port where "adb forward tcp:<port> tcp:22" exposes the
+# sshd of one fleet device plugged in over USB. When set, every device SSH is
+# tunnelled through that device (ProxyCommand) and ping runs ON the jump device
+# because ICMP cannot traverse the adb bridge. Not covered by this mode:
+# SSH TERMINAL (paramiko connects directly) and RUN test-send (UDP/OSC).
+JUMP_PORT = os.environ.get("BI_JUMP_PORT", "")
+SSHPASS_BIN = shutil.which("sshpass") or "sshpass"
+
+def _jump_ssh_base():
+    return [SSHPASS_BIN, "-p", SSH_PASS, "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=5",
+            "-o", f"ControlPath={SSH_CONTROL_DIR}/jump-%r@%h-%p",
+            "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+            "-p", JUMP_PORT, "root@127.0.0.1"]
+
 def ping_ip(ip):
+    if JUMP_PORT:
+        # run the ping on the jump device; "*" marks a bridged measurement
+        try:
+            r = subprocess.run([*_jump_ssh_base(), f"ping -c 1 -W 1 {ip}"],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                for line in r.stdout.split("\n"):
+                    if "time=" in line:
+                        return True, f"{line.split('time=')[1].split(' ')[0]}ms*"
+                return True, "ok*"
+            return False, "offline"
+        except Exception:
+            return False, "error"
     try:
-        r = subprocess.run(["ping","-c","1","-W","1",ip], capture_output=True, text=True, timeout=2)
+        r = subprocess.run(["ping","-c","1",*PING_WAIT,ip], capture_output=True, text=True, timeout=2)
         if r.returncode == 0:
             for line in r.stdout.split("\n"):
                 if "time=" in line:
@@ -243,14 +351,22 @@ def ssh_run(ip, cmd, timeout=15):
     SSH_SEMAPHORE.acquire()
     try:
         ctrl = f"{SSH_CONTROL_DIR}/%r@%h:%p"
-        r = subprocess.run([
+        base = [
             "sshpass", "-p", SSH_PASS, "ssh",
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=5",
             "-o", f"ControlPath={ctrl}",
             "-o", "ControlMaster=auto",
             "-o", "ControlPersist=60",
-            f"{SSH_USER}@{ip}", cmd
+        ]
+        if JUMP_PORT:
+            proxy = (f"{SSHPASS_BIN} -p {SSH_PASS} ssh -o StrictHostKeyChecking=no "
+                     f"-o UserKnownHostsFile=/dev/null "
+                     f"-p {JUMP_PORT} root@127.0.0.1 -W %h:%p")
+            base += ["-o", f"ProxyCommand={proxy}"]
+        r = subprocess.run([
+            *base, f"{SSH_USER}@{ip}", cmd
         ], capture_output=True, text=True, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     finally:
@@ -293,7 +409,7 @@ def _gitpull_worker(num):
     if not job_locks[page][num].acquire(blocking=False): return
     try:
         set_job(page, num, "running", "git pull...")
-        code, out, err = ssh_run(node_ip(num), f"cd {GIT_DIR} && git stash; git pull", timeout=30)
+        code, out, err = ssh_run(node_ip(num), f"cd {GIT_DIR} && git pull --ff-only", timeout=30)
         if code == 0:
             msg = (out.split("\n")[-1])[:24] if out else "done"
             set_job(page, num, "ok", msg)
@@ -388,12 +504,24 @@ def _tmux_start(num, page):
     try:
         set_job(page, num, "running", "starting...")
         ip = node_ip(num)
-        ssh_run(ip, f"tmux kill-session -t {conf['session']} 2>/dev/null", timeout=5)
-        time.sleep(0.3)
-        cmd = f"tmux new-session -d -s {conf['session']} \\; set remain-on-exit on \\; send-keys '{conf['cmd']}' Enter"
-        code, out, err = ssh_run(ip, cmd, timeout=30)
-        if code == 0: set_job(page, num, "ok", "tmux started")
-        else: set_job(page, num, "error", (err or out)[:40] or "start fail")
+        if page == "run":
+            # MANS: autostart 導入機は service を起動、未導入機は tmux にフォールバック
+            fallback = (f"tmux kill-session -t {conf['session']} 2>/dev/null; sleep 0.3; "
+                        f"tmux new-session -d -s {conf['session']} \\; set remain-on-exit on \\; "
+                        f"send-keys '{conf['cmd']}' Enter")
+            cmd = f"systemctl start {RUN_SERVICE} 2>/dev/null && echo SVC_STARTED || ({fallback})"
+            code, out, err = ssh_run(ip, cmd, timeout=30)
+            if code == 0:
+                set_job(page, num, "ok", "service started" if "SVC_STARTED" in out else "tmux started")
+            else:
+                set_job(page, num, "error", (err or out)[:40] or "start fail")
+        else:
+            ssh_run(ip, f"tmux kill-session -t {conf['session']} 2>/dev/null", timeout=5)
+            time.sleep(0.3)
+            cmd = f"tmux new-session -d -s {conf['session']} \\; set remain-on-exit on \\; send-keys '{conf['cmd']}' Enter"
+            code, out, err = ssh_run(ip, cmd, timeout=30)
+            if code == 0: set_job(page, num, "ok", "tmux started")
+            else: set_job(page, num, "error", (err or out)[:40] or "start fail")
     except subprocess.TimeoutExpired:
         set_job(page, num, "error", "ssh timeout")
     except Exception as e:
@@ -413,7 +541,12 @@ def _tmux_stop(num, page):
     if not job_locks[page][num].acquire(blocking=False): return
     try:
         set_job(page, num, "running", "stopping...")
-        ssh_run(node_ip(num), f"tmux kill-session -t {conf['session']} 2>/dev/null", timeout=10)
+        if page == "run":
+            ssh_run(node_ip(num),
+                    f"systemctl stop {RUN_SERVICE} 2>/dev/null; tmux kill-session -t {conf['session']} 2>/dev/null; true",
+                    timeout=15)
+        else:
+            ssh_run(node_ip(num), f"tmux kill-session -t {conf['session']} 2>/dev/null", timeout=10)
         set_job(page, num, "idle", "stopped")
     except subprocess.TimeoutExpired:
         set_job(page, num, "error", "ssh timeout")
@@ -434,9 +567,14 @@ def _tmux_check(num, page):
     if not job_locks[page][num].acquire(blocking=False): return
     try:
         set_job(page, num, "running", "checking...")
-        code, out, err = ssh_run(node_ip(num),
-            f"tmux has-session -t {conf['session']} 2>/dev/null && echo ALIVE || echo DEAD", timeout=10)
-        if "ALIVE" in out: set_job(page, num, "ok", "running")
+        if page == "run":
+            check = (f"systemctl is-active --quiet {RUN_SERVICE} 2>/dev/null && echo ALIVE_SVC || "
+                     f"(tmux has-session -t {conf['session']} 2>/dev/null && echo ALIVE_TMUX || echo DEAD)")
+        else:
+            check = f"tmux has-session -t {conf['session']} 2>/dev/null && echo ALIVE || echo DEAD"
+        code, out, err = ssh_run(node_ip(num), check, timeout=10)
+        if "ALIVE_SVC" in out: set_job(page, num, "ok", "running (service)")
+        elif "ALIVE" in out: set_job(page, num, "ok", "running (tmux)" if page == "run" else "running")
         else: set_job(page, num, "idle", "not running")
     except subprocess.TimeoutExpired:
         set_job(page, num, "error", "ssh timeout")
@@ -455,8 +593,12 @@ def _tmux_check(num, page):
 def _tmux_fetch_log(num, page):
     conf = TMUX_CONF[page]
     try:
-        code, out, err = ssh_run(node_ip(num),
-            f"tmux capture-pane -t {conf['session']} -p -S -100 2>/dev/null", timeout=10)
+        if page == "run":
+            # service / tmux どちらの起動でも同じファイルに書かれる
+            fetch = f"tail -n 120 {RUN_LOG_FILE} 2>/dev/null"
+        else:
+            fetch = f"tmux capture-pane -t {conf['session']} -p -S -100 2>/dev/null"
+        code, out, err = ssh_run(node_ip(num), fetch, timeout=10)
         with script_logs_lock:
             script_logs[page][num] = out if code == 0 else f"(no session)\n{err}"
     except Exception as e:
@@ -948,20 +1090,20 @@ def make_html(page_id, title, subtitle, toolbar_html, cluster_btn_defs, js_actio
 <div class="clusters" id="clusters"></div><div class="footer" id="footer"></div>
 <script>
 const PAGE='{page_id}';
-const CL=Array.from({{length:10}},(_,i)=>({{s:i*10+1,e:i*10+10,l:`CLUSTER ${{String(i+1).padStart(2,'0')}} \u2014 NODE ${{i*10+1}}\u2013${{i*10+10}}`}}));
+const CL={CLUSTERS_JS};
 const CBTNS={cluster_btn_defs};let J={{}};
-function build(){{const c=document.getElementById('clusters');c.innerHTML='';CL.forEach((cl,ci)=>{{const d=document.createElement('div');d.className='cluster';const ca=CBTNS.map(([a,cls,l])=>`<button class="cb ${{cls}}" onclick="cAct(${{ci}},'${{a}}')">${{l}}</button>`).join('');d.innerHTML=`<div class="ch"><div class="ct">${{cl.l}}</div><div class="cs" id="cs${{ci}}">\u2014</div><div class="ca">${{ca}}</div></div><div class="grid" id="cg${{ci}}"></div>`;c.appendChild(d);const g=document.getElementById('cg'+ci);for(let i=0;i<10;i++){{const n=cl.s+i;const nd=document.createElement('div');nd.className='node';nd.id='nd'+n;nd.title=`NODE ${{n}}`;nd.onclick=()=>toggleSel(n);nd.innerHTML=`<div class="nn">NODE ${{n}}</div><div class="dot"></div><div class="nl" id="nl${{n}}">\u2014</div>`;g.appendChild(nd);}}}});}}
-function applyStatus(d){{J=d;let ok=0,ng=0,run=0,idle=0;for(let n=1;n<=100;n++){{const j=d[n]||{{status:'idle',msg:''}};const nd=document.getElementById('nd'+n),nl=document.getElementById('nl'+n);if(!nd)continue;nd.className='node st-'+j.status+(sel.has(n)?' selected':'');nl.textContent=j.msg||j.status;if(j.status==='ok')ok++;else if(j.status==='error')ng++;else if(j.status==='running')run++;else idle++;}}document.getElementById('summary').textContent=`OK:${{ok}} ERR:${{ng}} RUN:${{run}} IDLE:${{idle}}`;CL.forEach((cl,ci)=>{{let co=0,cn=0,cr=0;for(let i=0;i<10;i++){{const j=d[cl.s+i];if(!j)continue;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}}const el=document.getElementById('cs'+ci);if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===10?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}}});document.getElementById('footer').textContent='LAST: '+new Date().toLocaleTimeString();}}
+function build(){{const c=document.getElementById('clusters');c.innerHTML='';CL.forEach((cl,ci)=>{{const d=document.createElement('div');d.className='cluster';const ca=CBTNS.map(([a,cls,l])=>`<button class="cb ${{cls}}" onclick="cAct(${{ci}},'${{a}}')">${{l}}</button>`).join('');d.innerHTML=`<div class="ch"><div class="ct">${{cl.l}}</div><div class="cs" id="cs${{ci}}">\u2014</div><div class="ca">${{ca}}</div></div><div class="grid" id="cg${{ci}}"></div>`;c.appendChild(d);const g=document.getElementById('cg'+ci);cl.ids.forEach(n=>{{const nd=document.createElement('div');nd.className='node';nd.id='nd'+n;nd.title=`NODE ${{n}}`;nd.onclick=()=>toggleSel(n);nd.innerHTML=`<div class="nn">NODE ${{n}}</div><div class="dot"></div><div class="nl" id="nl${{n}}">\u2014</div>`;g.appendChild(nd);}});}});}}
+function applyStatus(d){{J=d;let ok=0,ng=0,run=0,idle=0;allNums().forEach(n=>{{const j=d[n]||{{status:'idle',msg:''}};const nd=document.getElementById('nd'+n),nl=document.getElementById('nl'+n);if(!nd)return;nd.className='node st-'+j.status+(sel.has(n)?' selected':'');nl.textContent=j.msg||j.status;if(j.status==='ok')ok++;else if(j.status==='error')ng++;else if(j.status==='running')run++;else idle++;}});document.getElementById('summary').textContent=`OK:${{ok}} ERR:${{ng}} RUN:${{run}} IDLE:${{idle}}`;CL.forEach((cl,ci)=>{{let co=0,cn=0,cr=0;cl.ids.forEach(n2=>{{const j=d[n2];if(!j)return;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}});const el=document.getElementById('cs'+ci);if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===cl.ids.length?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}}});document.getElementById('footer').textContent='LAST: '+new Date().toLocaleTimeString();}}
 async function poll(){{try{{const r=await fetch('/api/status/'+PAGE);applyStatus(await r.json())}}catch(e){{}}}}
 async function runNums(action,nums){{await fetch('/api/run',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action,page:PAGE,nums}})}});}}
 async function resetNums(nums){{await fetch('/api/reset',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{page:PAGE,nums}})}});await poll();}}
-function allNums(){{return Array.from({{length:100}},(_,i)=>i+1);}}
-function clNums(ci){{const cl=CL[ci];return Array.from({{length:10}},(_,i)=>cl.s+i);}}
+function allNums(){{return CL.flatMap(c=>c.ids);}}
+function clNums(ci){{return CL[ci].ids.slice();}}
 let sel=new Set();
 function toggleSel(n){{const nd=document.getElementById('nd'+n);if(sel.has(n)){{sel.delete(n);nd.classList.remove('selected');}}else{{sel.add(n);nd.classList.add('selected');}}updSelBtn();}}
 function selCluster(ci){{clNums(ci).forEach(n=>{{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}});updSelBtn();}}
 function clearSel(){{sel.forEach(n=>{{const nd=document.getElementById('nd'+n);if(nd)nd.classList.remove('selected');}});sel.clear();updSelBtn();}}
-function selAll(){{for(let n=1;n<=100;n++){{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}};updSelBtn();}}
+function selAll(){{allNums().forEach(n=>{{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}});updSelBtn();}}
 function getSelNums(){{return sel.size>0?Array.from(sel):allNums();}}
 function updSelBtn(){{const el=document.getElementById('selCount');if(el)el.textContent=sel.size>0?sel.size+' selected':'all';}}
 {js_actions}
@@ -996,8 +1138,8 @@ def make_system_html():
   </select>
   <span class="mbtn" id="autoCountdown" style="cursor:default;min-width:38px;text-align:center;border-color:transparent;color:var(--dim);font-size:.55rem"></span>
   <button class="btn b2" onclick="runNums('inet',allNums())">&#9654; INET ALL</button>
-  <button class="btn" onclick="if(confirm('GIT PULL ALL 100 NODES?'))runNums('gitpull',allNums())">&#9654; GIT PULL ALL</button>
-  <button class="btn bd" onclick="if(confirm('REBOOT ALL 100 NODES?\\n\u3053\u306e\u64cd\u4f5c\u306f\u5143\u306b\u623b\u305b\u307e\u305b\u3093'))runNums('reboot',allNums())">&#9888; REBOOT ALL</button>
+  <button class="btn" onclick="if(confirm('GIT PULL ALL NODES?'))runNums('gitpull',allNums())">&#9654; GIT PULL ALL</button>
+  <button class="btn bd" onclick="if(confirm('REBOOT ALL NODES?\\n\u3053\u306e\u64cd\u4f5c\u306f\u5143\u306b\u623b\u305b\u307e\u305b\u3093'))runNums('reboot',allNums())">&#9888; REBOOT ALL</button>
   <button class="btn bd" onclick="resetNums(allNums())">RESET</button>
   <div class="sep"></div>
   <div class="mode-bar">
@@ -1013,12 +1155,12 @@ def make_system_html():
 <div class="footer" id="footer"></div>
 <script>
 const PAGE='system';
-const CL=Array.from({{length:10}},(_,i)=>({{s:i*10+1,e:i*10+10,l:`CLUSTER ${{String(i+1).padStart(2,'0')}} \u2014 NODE ${{i*10+1}}\u2013${{i*10+10}}`}}));
+const CL={CLUSTERS_JS};
 let J={{}};
 let clickMode='ping';
 function setMode(m){{clickMode=m;['ping','inet','reboot'].forEach(k=>{{const el=document.getElementById('m_'+k);el.className=k===m?'mbtn on'+(k==='reboot'?' dng':''):'mbtn';}});}}
-function allNums(){{return Array.from({{length:100}},(_,i)=>i+1);}}
-function clNums(ci){{const cl=CL[ci];return Array.from({{length:10}},(_,i)=>cl.s+i);}}
+function allNums(){{return CL.flatMap(c=>c.ids);}}
+function clNums(ci){{return CL[ci].ids.slice();}}
 async function runNums(action,nums){{await fetch('/api/run',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action,page:PAGE,nums}})}});}}
 async function resetNums(nums){{await fetch('/api/reset',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{page:PAGE,nums}})}});await poll();}}
 function build(){{
@@ -1028,7 +1170,7 @@ function build(){{
     d.innerHTML=`<div class="ch"><div class="ct">${{cl.l}}</div><div class="cs" id="cs${{ci}}">\u2014</div><div class="ca"><button class="cb" onclick="cAct(${{ci}},'ping')">PING</button><button class="cb c2" onclick="cAct(${{ci}},'inet')">INET</button><button class="cb" onclick="cAct(${{ci}},'gitpull')">GIT</button><button class="cb" onclick="cAct(${{ci}},'reboot')">REBOOT</button><button class="cb c2" onclick="cAct(${{ci}},'reset')">RST</button></div></div><div class="grid" id="cg${{ci}}"></div>`;
     c.appendChild(d);
     const g=document.getElementById('cg'+ci);
-    for(let i=0;i<10;i++){{const n=cl.s+i;const nd=document.createElement('div');nd.className='node';nd.id='nd'+n;nd.title=`NODE ${{n}} (10.0.0.${{n}})`;nd.onclick=()=>nodeClick(n);nd.innerHTML=`<div class="nn">NODE ${{n}}</div><div class="dot"></div><div class="nl" id="nl${{n}}">\u2014</div>`;g.appendChild(nd);}}
+    cl.ids.forEach(n=>{{const nd=document.createElement('div');nd.className='node';nd.id='nd'+n;nd.title=`NODE ${{n}} (10.0.0.${{n}})`;nd.onclick=()=>nodeClick(n);nd.innerHTML=`<div class="nn">NODE ${{n}}</div><div class="dot"></div><div class="nl" id="nl${{n}}">\u2014</div>`;g.appendChild(nd);}});
   }});
 }}
 async function cAct(ci,a){{
@@ -1044,9 +1186,9 @@ async function nodeClick(n){{
 }}
 function applyStatus(d){{
   J=d;let ok=0,ng=0,run=0,idle=0;
-  for(let n=1;n<=100;n++){{const j=d[n]||{{status:'idle',msg:''}};const nd=document.getElementById('nd'+n),nl=document.getElementById('nl'+n);if(!nd)continue;nd.className='node st-'+j.status;nl.textContent=j.msg||j.status;if(j.status==='ok')ok++;else if(j.status==='error')ng++;else if(j.status==='running')run++;else idle++;}}
+  allNums().forEach(n=>{{const j=d[n]||{{status:'idle',msg:''}};const nd=document.getElementById('nd'+n),nl=document.getElementById('nl'+n);if(!nd)return;nd.className='node st-'+j.status;nl.textContent=j.msg||j.status;if(j.status==='ok')ok++;else if(j.status==='error')ng++;else if(j.status==='running')run++;else idle++;}});
   document.getElementById('summary').textContent=`OK:${{ok}} ERR:${{ng}} RUN:${{run}} IDLE:${{idle}}`;
-  CL.forEach((cl,ci)=>{{let co=0,cn=0,cr=0;for(let i=0;i<10;i++){{const j=d[cl.s+i];if(!j)continue;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}}const el=document.getElementById('cs'+ci);if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===10?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}}});
+  CL.forEach((cl,ci)=>{{let co=0,cn=0,cr=0;cl.ids.forEach(n2=>{{const j=d[n2];if(!j)return;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}});const el=document.getElementById('cs'+ci);if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===cl.ids.length?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}}});
   document.getElementById('footer').textContent='LAST: '+new Date().toLocaleTimeString();
 }}
 async function poll(){{try{{const r=await fetch('/api/status/'+PAGE);applyStatus(await r.json())}}catch(e){{}}}}
@@ -1147,12 +1289,10 @@ function getTestTargets(){
   if(m==='nums') return parseNodeRange(document.getElementById('testNums').value);
   if(m==='digit'){
     const d=parseInt(document.getElementById('testDigit').value);
-    const nums=[];
-    for(let i=1;i<=100;i++){if(i%10===d)nums.push(i);}
-    return nums;
+    return allNums().filter(i=>i%10===d);
   }
   if(m==='selected') return sel.size>0?Array.from(sel).sort((a,b)=>a-b):[];
-  if(m==='all') return Array.from({length:100},(_,i)=>i+1);
+  if(m==='all') return allNums();
   return [];
 }
 function parseNodeRange(s){
@@ -1305,17 +1445,17 @@ if(typeof io!=='undefined'){
 <script>
 const PAGE='{page_id}';
 const ACT='{action_prefix}';
-const CL=Array.from({{length:10}},(_,i)=>({{s:i*10+1,e:i*10+10,l:`CLUSTER ${{String(i+1).padStart(2,'0')}} \u2014 NODE ${{i*10+1}}\u2013${{i*10+10}}`}}));
+const CL={CLUSTERS_JS};
 let J={{}};
 let sel=new Set();
 function toggleSel(n){{const nd=document.getElementById('nd'+n);if(sel.has(n)){{sel.delete(n);nd.classList.remove('selected');}}else{{sel.add(n);nd.classList.add('selected');}}updSelBtn();}}
 function selCluster(ci){{clNums(ci).forEach(n=>{{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}});updSelBtn();}}
 function clearSel(){{sel.forEach(n=>{{const nd=document.getElementById('nd'+n);if(nd)nd.classList.remove('selected');}});sel.clear();updSelBtn();}}
-function selAll(){{for(let n=1;n<=100;n++){{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}};updSelBtn();}}
+function selAll(){{allNums().forEach(n=>{{sel.add(n);const nd=document.getElementById('nd'+n);if(nd)nd.classList.add('selected');}});updSelBtn();}}
 function getSelNums(){{return sel.size>0?Array.from(sel):allNums();}}
 function updSelBtn(){{const el=document.getElementById('selCount');if(el)el.textContent=sel.size>0?sel.size+' selected':'all';}}
-function allNums(){{return Array.from({{length:100}},(_,i)=>i+1);}}
-function clNums(ci){{const cl=CL[ci];return Array.from({{length:10}},(_,i)=>cl.s+i);}}
+function allNums(){{return CL.flatMap(c=>c.ids);}}
+function clNums(ci){{return CL[ci].ids.slice();}}
 async function runNums(action,nums){{await fetch('/api/run',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action,page:PAGE,nums}})}});}}
 async function resetNums(nums){{await fetch('/api/reset',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{page:PAGE,nums}})}});await poll();}}
 {test_js}
@@ -1342,22 +1482,20 @@ function build(){{
       </div>`;
     c.appendChild(d);
     const g=document.getElementById('cg'+ci);
-    for(let i=0;i<10;i++){{
-      const n=cl.s+i;
+    cl.ids.forEach(n=>{{
       const nd=document.createElement('div');
       nd.className='node';nd.id='nd'+n;
       nd.title=`NODE ${{n}} (10.0.0.${{n}})`;
       nd.onclick=()=>toggleSel(n);
       nd.innerHTML=`<div class="nn">NODE ${{n}}</div><div class="dot"></div><div class="nl" id="nl${{n}}">—</div>`;
       g.appendChild(nd);
-    }}
+    }});
     const li=document.getElementById('li'+ci);
-    for(let i=0;i<10;i++){{
-      const n=cl.s+i;
+    cl.ids.forEach(n=>{{
       const ld=document.createElement('div');ld.className='log-node';ld.id='ln'+n;
       ld.innerHTML=`<div class="log-node-hd"><span>NODE ${{n}} (10.0.0.${{n}})</span><button class="refresh-btn" onclick="event.stopPropagation();refreshLog(${{n}})">↻</button></div><div class="log-text" id="logtext${{n}}">—</div>`;
       li.appendChild(ld);
-    }}
+    }});
   }});
 }}
 function toggleLog(ci){{
@@ -1389,26 +1527,26 @@ async function refreshLog(n){{
 }}
 function applyStatus(d){{
   J=d;let ok=0,ng=0,run=0,idle=0;
-  for(let n=1;n<=100;n++){{
+  allNums().forEach(n=>{{
     const j=d[n]||{{status:'idle',msg:''}};
     const nd=document.getElementById('nd'+n),nl=document.getElementById('nl'+n);
-    if(!nd)continue;
+    if(!nd)return;
     nd.className='node st-'+j.status+(sel.has(n)?' selected':'');
     nl.textContent=j.msg||j.status;
     if(j.status==='ok')ok++;else if(j.status==='error')ng++;else if(j.status==='running')run++;else idle++;
-  }}
+  }});
   document.getElementById('summary').textContent=`OK:${{ok}} ERR:${{ng}} RUN:${{run}} IDLE:${{idle}}`;
   CL.forEach((cl,ci)=>{{
     let co=0,cn=0,cr=0;
-    for(let i=0;i<10;i++){{const j=d[cl.s+i];if(!j)continue;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}}
+    cl.ids.forEach(n2=>{{const j=d[n2];if(!j)return;if(j.status==='ok')co++;else if(j.status==='error')cn++;else if(j.status==='running')cr++;}});
     const el=document.getElementById('cs'+ci);
-    if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===10?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}
+    if(el){{el.textContent=`${{co}}ok/${{cn}}err/${{cr}}run`;el.style.color=co===cl.ids.length?'var(--ok)':cn>0?'var(--ng)':cr>0?'var(--run)':'var(--dim)';}}
   }});
   document.getElementById('footer').textContent='LAST: '+new Date().toLocaleTimeString();
 }}
 async function poll(){{try{{const r=await fetch('/api/status/'+PAGE);applyStatus(await r.json())}}catch(e){{}}}}
 async function autoRefreshLogs(){{
-  for(let ci=0;ci<10;ci++){{
+  for(let ci=0;ci<CL.length;ci++){{
     const la=document.getElementById('la'+ci);
     if(la&&la.classList.contains('open'))await fetchClusterLogs(ci);
   }}
@@ -1527,7 +1665,7 @@ def make_terminal_html():
 <div class="term-bar">
   <label>DEVICE</label>
   <select id="tdev">
-    {"".join(f'<optgroup label="CLUSTER {ci+1}">' + "".join(f'<option value="{ci*10+i+1}">NODE {ci*10+i+1} — 10.0.0.{ci*10+i+1}</option>' for i in range(10)) + '</optgroup>' for ci in range(10))}
+    {TERMINAL_OPTGROUPS}
   </select>
   <button class="tbtn tbtn-connect" id="btnConn" onclick="doConnect()">CONNECT</button>
   <button class="tbtn tbtn-disconnect" id="btnDisc" onclick="doDisconnect()" style="display:none">DISCONNECT</button>
@@ -1652,11 +1790,11 @@ def make_broadcast_html():
 <div class="bc-side">
   <div class="bc-sec">
     <div class="bc-sec-t">TARGET SCOPE</div>
-    <label class="sopt"><input type="radio" name="scope" value="all"> All devices (100)</label>
+    <label class="sopt"><input type="radio" name="scope" value="all"> All devices ({len(NODE_IDS)})</label>
     <label class="sopt"><input type="radio" name="scope" value="cluster" checked> Cluster</label>
     <div class="ssub" id="clSub">
       <select id="clSel">
-        {"".join(f'<option value="{ci+1}">Cluster {ci+1} (NODE {ci*10+1}–{ci*10+10})</option>' for ci in range(10))}
+        {BROADCAST_CLUSTER_OPTIONS}
       </select>
     </div>
     <label class="sopt"><input type="radio" name="scope" value="node"> Specific nodes</label>
@@ -1705,12 +1843,12 @@ let running = false, rcvd = 0, total = 0;
 let snippets = JSON.parse(localStorage.getItem('bi_snippets') || 'null') || [
   {{name:"System info", command:"uname -a && uptime"}},
   {{name:"Disk usage", command:"df -h /"}},
-  {{name:"Service status", command:"systemctl status pbg --no-pager -l 2>/dev/null || echo no service"}},
-  {{name:"Last 50 logs", command:"journalctl -u pbg -n 50 --no-pager 2>/dev/null || tail -50 /tmp/bi_run.log 2>/dev/null || echo 'no logs'"}},
+  {{name:"Service status", command:"systemctl status ccbt-bi --no-pager -l 2>/dev/null || echo no service"}},
+  {{name:"Last 50 logs", command:"tail -50 /tmp/bi_main.log 2>/dev/null || journalctl -u ccbt-bi -n 50 --no-pager 2>/dev/null || echo 'no logs'"}},
   {{name:"Python packages", command:"pip list 2>/dev/null | head -30 || uv pip list 2>/dev/null | head -30"}},
   {{name:"Network", command:"ip addr show | grep 'inet '"}},
   {{name:"Git status", command:"cd {GIT_DIR} && git log --oneline -5 2>/dev/null || echo 'no repo'"}},
-  {{name:"Restart BI", command:"tmux kill-session -t bi_main 2>/dev/null; echo 'killed'"}},
+  {{name:"Restart BI", command:"systemctl restart ccbt-bi 2>/dev/null || (tmux kill-session -t bi_main 2>/dev/null; echo killed)"}},
   {{name:"Change HW Volume", command:"amixer set 'TX LEFT ANA GAIN' 50%"}},
 ];
 function saveSnippets(){{ localStorage.setItem('bi_snippets', JSON.stringify(snippets)); }}
@@ -1888,10 +2026,10 @@ def handle_broadcast(data):
     # Resolve targets
     targets = []
     if scope == "all":
-        targets = list(range(1, NODE_COUNT + 1))
+        targets = list(NODE_IDS)
     elif scope == "cluster" and scope_value:
         cid = int(scope_value)
-        targets = list(range((cid-1)*10+1, cid*10+1))
+        targets = list(CLUSTERS[cid - 1]["ids"]) if 1 <= cid <= len(CLUSTERS) else []
     elif scope == "node" and scope_value:
         targets = [int(x) for x in scope_value.split(",") if x.strip()]
     targets = [n for n in targets if 1 <= n <= NODE_COUNT]
@@ -2025,6 +2163,8 @@ if __name__ == "__main__":
     threading.Thread(target=_run_scraper_loop, daemon=True, name="run-scraper").start()
     print("=" * 50)
     print("  BI MONITOR")
+    _mode = "cluster_map" if os.path.exists(CLUSTER_MAP_CSV) else "CCBT 10x10 fallback"
+    print(f"  fleet: {len(NODE_IDS)} nodes / {len(CLUSTERS)} clusters ({_mode})")
     print("  http://localhost:5050           -> 01 SYSTEM")
     print("  http://localhost:5050/led       -> 02 LED")
     print("  http://localhost:5050/sound     -> 03 SOUND")
@@ -2034,4 +2174,7 @@ if __name__ == "__main__":
     print("  http://localhost:5050/terminal  -> SSH TERMINAL")
     print("  http://localhost:5050/broadcast -> BROADCAST")
     print("=" * 50)
-    socketio.run(app, host="0.0.0.0", port=5050, debug=False)
+    # flask-socketio >= 5.3 refuses the Werkzeug server unless this is set.
+    # This monitor only ever runs on the venue LAN, never exposed publicly.
+    socketio.run(app, host="0.0.0.0", port=5050, debug=False,
+                 allow_unsafe_werkzeug=True)

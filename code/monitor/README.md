@@ -1,6 +1,31 @@
 # BI Monitor
 
-Parallel Botanical Garden の全デバイス（100台・10クラスタ）を Web ブラウザから管理するためのモニターアプリケーションです。
+BI の全デバイスを Web ブラウザから管理するためのモニターアプリケーションです。
+CCBT『平行森林』(100台・10クラスタ) 用に実装され、MANS 2026 (30-50台・3-5クラスタ) 対応に拡張済み。
+
+---
+
+## MANS モード (2026-08 拡張)
+
+`config/cluster_map_mans.csv` (id,cluster) が存在すればそれを正としてクラスタ表示・
+ALL 系操作・BROADCAST のスコープが疎 ID で組まれる。無ければ従来の CCBT 10×10 に戻る。
+
+| 環境変数 | 意味 | 既定 |
+|---|---|---|
+| `BI_SSH_PASS` | デバイスの SSH パスワード (未設定なら起動時プロンプト) | — |
+| `BI_CLUSTER_MAP` | cluster map CSV のパス | `../config/cluster_map_mans.csv` |
+| `BI_SEND_SCRIPT` | テスト送信スクリプト | `../scripts/send_bi_input.py` (repo 相対) |
+
+挙動の変更点:
+
+- **99 RUN は systemd 優先**: `ccbt-bi.service` があれば systemctl start/stop/is-active、
+  未導入機は従来の tmux にフォールバック。CHECK の表示で `(service)` / `(tmux)` が分かる
+- **RUN ログは `/tmp/bi_main.log`** (autostart wrapper と同じファイル)。ログスクレイパーを
+  効かせるには、起動後に一度 RUN の CHECK を実行して稼働機を ok にすること
+- **`git stash; git pull` を LLM/TTS/RUN の起動コマンドから除去** (会場 LAN はオフライン。
+  01 SYSTEM の GIT PULL ボタンは `--ff-only` の明示操作として残置)
+- ⚠️ フォント / socket.io / xterm.js は CDN 読みのまま。モニター PC にインターネットが
+  無い場合、機能は動くが表示フォントが落ち、RUN のテスト送信進捗と SSH ターミナルが使えない
 
 ---
 

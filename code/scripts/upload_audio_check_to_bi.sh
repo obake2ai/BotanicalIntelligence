@@ -169,7 +169,8 @@ if [[ ${FAILED_COUNT} -gt 0 ]]; then
     echo ""
     echo -e "${RED}Failed devices:${NC}"
     grep "^FAILED:" "${LOG_FILE}" | while read -r line; do
-        device_num=$(echo "${line}" | grep -oP '10\.0\.0\.\K\d+')
+        # sed keeps this portable - grep -oP is GNU-only and fails on macOS
+        device_num=$(echo "${line}" | sed -E 's/.*10\.0\.0\.([0-9]+).*/\1/')
         echo -e "${RED}  - 10.0.0.${device_num} (bi_check_$(printf '%03d' ${device_num}).wav)${NC}"
     done
 fi

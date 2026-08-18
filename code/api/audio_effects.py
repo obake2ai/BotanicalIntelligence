@@ -439,6 +439,20 @@ def write_wav_stereo(path: str, left: np.ndarray, right: np.ndarray, sr: int) ->
         wf.writeframes((interleaved * 32767).astype(np.int16).tobytes())
 
 
+def write_wav_mono(path: str, mono: np.ndarray, sr: int) -> None:
+    """Write mono float32 array → 16-bit WAV at the given sample rate.
+
+    Counterpart of write_wav_stereo. Do not use write16k() here: it hardcodes
+    16kHz, so a 44.1kHz master written through it is replayed 2.76x slow.
+    """
+    mono = np.clip(np.nan_to_num(mono, nan=0.0), -1.0, 1.0)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes((mono * 32767).astype(np.int16).tobytes())
+
+
 # ========== Segmentation ==========
 
 
@@ -1060,7 +1074,7 @@ def process_voice(
         write_wav_stereo(tmp_stereo, left, right, sr)
     else:
         tmp_stereo = str(WORKDIR / "_v3_mono.wav")
-        write16k(tmp_stereo, mastered)  # reuse for mono output
+        write_wav_mono(tmp_stereo, mastered, sr)
 
     # Final format conversion (sample rate + format only, no audio effects)
     sh([

@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MANS 2026 — BI システム動作ロジック</title>
+<style>
+:root {
+  --paper:#F1F3EC; --paper-raised:#FBFBF7; --ink:#1B2119; --ink-soft:#52594B;
+  --line:#DADFD0; --moss:#3C5940; --moss-soft:#E4EADF; --alien:#7B3FA0;
+  --alien-soft:#F0E6F7; --warn:#A9660C; --danger:#9C2B2B;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--paper); color:var(--ink);
+  font-family:-apple-system,"Hiragino Sans","Yu Gothic",system-ui,sans-serif;
+  line-height:1.7; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:940px; margin:0 auto; padding:2.5rem 1.5rem 6rem; }
+header.hero { border-bottom:1px solid var(--line); padding-bottom:1.6rem; margin-bottom:2rem; }
+.eyebrow { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.75rem;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--moss); margin:0 0 .5rem; }
+h1 { font-size:1.8rem; line-height:1.3; margin:0 0 .7rem; }
+.lede { color:var(--ink-soft); margin:0; max-width:66ch; }
+h2 { font-size:1.3rem; margin:2.8rem 0 .8rem; padding-bottom:.35rem; border-bottom:1px solid var(--line); }
+h3 { font-size:1.02rem; margin:1.6rem 0 .4rem; }
+p { margin:.5rem 0 .9rem; }
+figure { margin:1.2rem 0 1.6rem; background:var(--paper-raised); border:1px solid var(--line);
+  border-radius:10px; padding:1rem; overflow-x:auto; }
+figure svg { display:block; max-width:100%; height:auto; }
+figcaption { font-size:.82rem; color:var(--ink-soft); margin-top:.6rem;
+  border-top:1px dashed var(--line); padding-top:.5rem; }
+code { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.86em;
+  background:var(--moss-soft); border-radius:4px; padding:.06em .35em; }
+pre { background:var(--ink); color:var(--paper); border-radius:8px; padding:.9rem 1.1rem;
+  overflow-x:auto; font-size:.82rem; line-height:1.6; }
+pre code { background:none; color:inherit; padding:0; }
+table { width:100%; border-collapse:collapse; font-size:.86rem; margin:.8rem 0 1.4rem; }
+th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:.72rem; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); }
+td code { white-space:nowrap; }
+.note { background:var(--alien-soft); border:1px solid #DCC9E8; border-radius:8px;
+  padding:.7rem 1rem; font-size:.9rem; margin:1rem 0; }
+.warn { background:#FBF3E4; border:1px solid #E8D9BC; border-left:3px solid var(--warn);
+  border-radius:8px; padding:.7rem 1rem; font-size:.9rem; margin:1rem 0; }
+footer { margin-top:3.5rem; padding-top:1.2rem; border-top:1px solid var(--line);
+  font-size:.8rem; color:var(--ink-soft); }
+/* SVG 共通 */
+svg text { font-family:-apple-system,"Hiragino Sans",system-ui,sans-serif; fill:var(--ink); }
+svg .t-soft { fill:var(--ink-soft); }
+svg .t-moss { fill:var(--moss); }
+svg .t-mono { font-family:ui-monospace,Menlo,monospace; }
+svg .box { fill:var(--paper); stroke:var(--ink); stroke-width:1.3; rx:8; }
+svg .box-moss { fill:var(--moss-soft); stroke:var(--moss); stroke-width:1.3; rx:8; }
+svg .box-alien { fill:var(--alien-soft); stroke:var(--alien); stroke-width:1.3; rx:8; }
+svg .box-dash { fill:none; stroke:var(--ink-soft); stroke-width:1.2; stroke-dasharray:5 4; rx:8; }
+svg .edge { stroke:var(--ink); stroke-width:1.4; fill:none; }
+svg .edge-soft { stroke:var(--ink-soft); stroke-width:1.2; fill:none; stroke-dasharray:5 4; }
+svg .edge-moss { stroke:var(--moss); stroke-width:1.6; fill:none; }
+svg .node { fill:var(--paper); stroke:var(--ink); stroke-width:1.4; }
+svg .node-gate { fill:var(--moss); stroke:var(--moss); }
+svg .node-dead { fill:#E8E8E4; stroke:#B9BDB2; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">Botanical Intelligence / MANS 2026 deployment</p>
+  <h1>システムはどう動くか — 動作ロジックの全体図</h1>
+  <p class="lede">
+    M5Stack 30-50 台 (3-5 クラスタ)・センサー 1-2 系統・モニター PC 1 台で構成する
+    MANS 版 Botanical Intelligence の動作原理。CCBT『平行森林』(100台) のコードを下地に、
+    デバイス側は無改変・ハブ側の設定ファイルだけで組み替える設計。
+  </p>
+</header>
+
+<h2>1. 全体像 — 信号は左から右へ、言葉は森の中を巡る</h2>
+<figure>
+<svg viewBox="0 0 880 350" role="img" aria-label="システム全体図">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <!-- センサー -->
+  <rect class="box" x="15" y="125" width="150" height="92"/>
+  <text x="90" y="150" text-anchor="middle" font-size="14" font-weight="600">センサー (1-2)</text>
+  <text x="90" y="172" text-anchor="middle" font-size="11" class="t-soft">植物の生体信号</text>
+  <text x="90" y="190" text-anchor="middle" font-size="11" class="t-soft">AE / マイク RMS 等</text>
+  <!-- ハブ -->
+  <rect class="box-moss" x="222" y="125" width="180" height="92"/>
+  <text x="312" y="148" text-anchor="middle" font-size="14" font-weight="600">ハブ PC</text>
+  <text x="312" y="168" text-anchor="middle" font-size="11" class="t-soft">input_controller</text>
+  <text x="312" y="186" text-anchor="middle" font-size="11" class="t-soft">値 → soft_prefix + 種文</text>
+  <text x="312" y="203" text-anchor="middle" font-size="10" class="t-mono t-soft">→ 各クラスタのゲートへ</text>
+  <!-- モニター -->
+  <rect class="box-dash" x="222" y="258" width="180" height="70"/>
+  <text x="312" y="284" text-anchor="middle" font-size="13" font-weight="600" class="t-soft">モニター PC</text>
+  <text x="312" y="304" text-anchor="middle" font-size="10.5" class="t-soft">監視・一括操作 (SSH/ping)</text>
+  <!-- 矢印 センサー→ハブ -->
+  <line class="edge" x1="165" y1="171" x2="216" y2="171" marker-end="url(#ah)"/>
+  <!-- 矢印 ハブ→ゲートA (緑のゲートノードを直接指す) -->
+  <path class="edge-moss" d="M 396 123 C 430 85, 465 62, 514 53" marker-end="url(#ah)"/>
+  <text x="348" y="108" text-anchor="middle" font-size="10.5" class="t-mono t-moss">OSC /bi/input (UDP 8000)</text>
+  <!-- クラスタ A -->
+  <g>
+    <circle cx="530" cy="90" r="46" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+    <circle class="node-gate" cx="530" cy="52" r="7"/>
+    <circle class="node" cx="566" cy="79" r="6"/>
+    <circle class="node" cx="552" cy="122" r="6"/>
+    <circle class="node" cx="508" cy="122" r="6"/>
+    <circle class="node" cx="494" cy="79" r="6"/>
+    <text x="530" y="94" text-anchor="middle" font-size="12" font-weight="600">A</text>
+  </g>
+  <!-- クラスタ B -->
+  <g>
+    <circle cx="710" cy="90" r="46" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+    <circle class="node-gate" cx="710" cy="52" r="7"/>
+    <circle class="node" cx="746" cy="79" r="6"/>
+    <circle class="node" cx="732" cy="122" r="6"/>
+    <circle class="node" cx="688" cy="122" r="6"/>
+    <circle class="node" cx="674" cy="79" r="6"/>
+    <text x="710" y="94" text-anchor="middle" font-size="12" font-weight="600">B</text>
+  </g>
+  <!-- クラスタ C -->
+  <g>
+    <circle cx="620" cy="248" r="46" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+    <circle class="node-gate" cx="620" cy="210" r="7"/>
+    <circle class="node" cx="656" cy="237" r="6"/>
+    <circle class="node" cx="642" cy="280" r="6"/>
+    <circle class="node" cx="598" cy="280" r="6"/>
+    <circle class="node" cx="584" cy="237" r="6"/>
+    <text x="620" y="252" text-anchor="middle" font-size="12" font-weight="600">C</text>
+  </g>
+  <!-- ブリッジ -->
+  <line class="edge" x1="578" y1="90" x2="662" y2="90" marker-end="url(#ah)"/>
+  <path class="edge" d="M 700 134 C 685 165, 668 190, 652 212" marker-end="url(#ah)"/>
+  <path class="edge" d="M 578 232 C 550 200, 535 170, 528 142" marker-end="url(#ah)"/>
+  <text x="775" y="170" font-size="10.5" class="t-soft" text-anchor="middle">ブリッジ</text>
+  <text x="775" y="185" font-size="10.5" class="t-soft" text-anchor="middle">(ゲート間の一方向環)</text>
+  <!-- モニター dashed -->
+  <path class="edge-soft" d="M 402 290 C 470 290, 520 275, 566 258" marker-end="url(#ah)"/>
+  <!-- 音の注記 -->
+  <text x="530" y="330" font-size="11" class="t-soft">● = デバイス (各自がローカルでスピーカー再生)  ●<tspan fill="var(--moss)">緑</tspan> = ゲートノード (クラスタ最小 ID)</text>
+</svg>
+<figcaption>図1 — 全体像。センサーの信号はハブ PC で soft_prefix (揺らぎの強さ) + 種文に変換され、
+各クラスタのゲートノードに OSC で届く。以後は デバイス同士のリレーで言葉が森を巡る。
+モニター PC は読み取りと一括操作のみで、生成の経路には入らない。</figcaption>
+</figure>
+
+<h2>2. デバイス ID — IP の末尾がそのまま ID</h2>
+<p>
+  各デバイスには静的 IP (<code>10.0.0.X</code>) が設定済みで、<strong>X がそのままデバイス ID</strong> になる
+  (<code>main.py resolve_device_id()</code>)。今回もこれを無改変で使う。ID は起動時に次の優先順位で自己解決される:
+</p>
+<figure>
+<svg viewBox="0 0 880 165" role="img" aria-label="ID 解決フロー">
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <rect class="box" x="15" y="35" width="185" height="62"/>
+  <text x="107" y="61" text-anchor="middle" font-size="12.5" font-weight="600">① --device-id 引数</text>
+  <text x="107" y="81" text-anchor="middle" font-size="10.5" class="t-soft">(テスト時のみ)</text>
+  <rect class="box" x="255" y="35" width="185" height="62"/>
+  <text x="347" y="61" text-anchor="middle" font-size="12.5" font-weight="600" class="t-mono">② /etc/ccbt-device-id</text>
+  <text x="347" y="81" text-anchor="middle" font-size="10.5" class="t-soft">(あれば最優先の固定値)</text>
+  <rect class="box-moss" x="495" y="35" width="215" height="62"/>
+  <text x="602" y="57" text-anchor="middle" font-size="12" font-weight="600" class="t-mono">③ /etc/network/interfaces</text>
+  <text x="602" y="76" text-anchor="middle" font-size="10.5" class="t-mono t-soft">address 10.0.0.X → id=X</text>
+  <text x="602" y="90" text-anchor="middle" font-size="10" class="t-soft">← 本番はここで解決</text>
+  <rect class="box-alien" x="755" y="35" width="110" height="62"/>
+  <text x="810" y="62" text-anchor="middle" font-size="12" font-weight="600">device_id</text>
+  <text x="810" y="82" text-anchor="middle" font-size="10.5" class="t-mono t-soft">例: 47</text>
+  <line class="edge" x1="200" y1="66" x2="249" y2="66" marker-end="url(#ah2)"/>
+  <line class="edge" x1="440" y1="66" x2="489" y2="66" marker-end="url(#ah2)"/>
+  <line class="edge" x1="710" y1="66" x2="749" y2="66" marker-end="url(#ah2)"/>
+  <text x="224" y="56" text-anchor="middle" font-size="9.5" class="t-soft">無ければ</text>
+  <text x="464" y="56" text-anchor="middle" font-size="9.5" class="t-soft">無ければ</text>
+  <text x="440" y="135" text-anchor="middle" font-size="11" class="t-soft">ID は言語も決める: 末尾桁 → 言語の対応表 (main.py の dict)。MANS 用の言語構成はこの dict を 1 箇所編集するだけ。</text>
+</svg>
+<figcaption>図2 — ID 解決の優先順位。デバイスの選抜 = ID 集合の確定であり、ID は連番にならない (欠番あり)。
+以降の設計はすべて「疎な ID 集合」を前提に組む。</figcaption>
+</figure>
+
+<h2>3. トポロジー — 手で書くのはクラスタ割当だけ</h2>
+<p>
+  結線の正本は <code>cluster_map_mans.csv</code> (id とクラスタ名の 2 列) だけ。
+  そこから <code>generate_networks_mans.py</code> が各デバイスの送信先 (<code>To</code> 列) を機械的に導出する。
+</p>
+<pre><code># cluster_map_mans.csv (手編集)          # networks_mans.csv (自動生成)
+id,cluster,note                           ID,IP,To
+23,A,入口看板側          ──generate──▶    23,10.0.0.23,"42,31,47"   ← リング両隣+ブリッジ
+31,A,                                     31,10.0.0.31,"23,42"      ← リング両隣
+42,A,                                     42,10.0.0.42,"31,23"
+47,B,BOOK BUS 前                          ...(未使用 ID の行は To 空欄で無害)</code></pre>
+
+<h3>3a. クラスタ内 = 双方向リング (故障に強い)</h3>
+<figure>
+<svg viewBox="0 0 880 325" role="img" aria-label="双方向リングと故障耐性">
+  <defs>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <!-- 左: 正常 -->
+  <g>
+    <text x="220" y="28" text-anchor="middle" font-size="13" font-weight="600">通常時: ソート済み ID の円環</text>
+    <!-- 5 nodes: 角度 -90,-18,54,126,198 / 中心(220,165) r=95 -->
+    <circle class="node-gate" cx="220" cy="70"  r="15"/>
+    <circle class="node" cx="310" cy="136" r="15"/>
+    <circle class="node" cx="276" cy="242" r="15"/>
+    <circle class="node" cx="164" cy="242" r="15"/>
+    <circle class="node" cx="130" cy="136" r="15"/>
+    <text x="220" y="75"  text-anchor="middle" font-size="11" font-weight="600" fill="#fff">23</text>
+    <text x="310" y="141" text-anchor="middle" font-size="11" font-weight="600">31</text>
+    <text x="276" y="247" text-anchor="middle" font-size="11" font-weight="600">42</text>
+    <text x="164" y="247" text-anchor="middle" font-size="11" font-weight="600">47</text>
+    <text x="130" y="141" text-anchor="middle" font-size="11" font-weight="600">51</text>
+    <!-- 両方向エッジ -->
+    <line class="edge" x1="234" y1="78"  x2="297" y2="126" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge" x1="305" y1="152" x2="282" y2="227" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge" x1="260" y1="242" x2="180" y2="242" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge" x1="158" y1="227" x2="135" y2="152" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge" x1="143" y1="126" x2="206" y2="78"  marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <text x="220" y="170" text-anchor="middle" font-size="10.5" class="t-soft">各ノードの To = 両隣</text>
+    <text x="220" y="186" text-anchor="middle" font-size="10.5" class="t-soft">(prev, next)</text>
+  </g>
+  <!-- 右: 1台故障 -->
+  <g>
+    <text x="640" y="28" text-anchor="middle" font-size="13" font-weight="600">1 台死んでも: 逆回りで巡回継続</text>
+    <circle class="node-gate" cx="640" cy="70"  r="15"/>
+    <circle class="node" cx="730" cy="136" r="15"/>
+    <circle class="node-dead" cx="696" cy="242" r="15"/>
+    <circle class="node" cx="584" cy="242" r="15"/>
+    <circle class="node" cx="550" cy="136" r="15"/>
+    <text x="640" y="75"  text-anchor="middle" font-size="11" font-weight="600" fill="#fff">23</text>
+    <text x="730" y="141" text-anchor="middle" font-size="11" font-weight="600">31</text>
+    <text x="696" y="247" text-anchor="middle" font-size="12" font-weight="700" fill="var(--danger)">✕</text>
+    <text x="584" y="247" text-anchor="middle" font-size="11" font-weight="600">47</text>
+    <text x="550" y="141" text-anchor="middle" font-size="11" font-weight="600">51</text>
+    <!-- 生きている経路 (太 moss) 31↔23↔51↔47 -->
+    <line class="edge-moss" x1="717" y1="126" x2="654" y2="78" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge-moss" x1="626" y1="78"  x2="563" y2="126" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <line class="edge-moss" x1="555" y1="152" x2="578" y2="227" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+    <!-- 死んだ経路 (薄) -->
+    <line class="edge-soft" x1="725" y1="152" x2="702" y2="227"/>
+    <line class="edge-soft" x1="680" y1="242" x2="600" y2="242"/>
+    <text x="696" y="278" text-anchor="middle" font-size="9.5" class="t-soft">(42 故障)</text>
+    <text x="640" y="308" text-anchor="middle" font-size="10.5" class="t-soft">42 への送信は無音で落ちるだけ (UDP)。残る 4 台は逆回りで会話継続</text>
+  </g>
+</svg>
+<figcaption>図3 — クラスタ内は双方向リング (前回 5 台展示で depth 4-5 の伝播を実証した形)。
+リレーは UDP なので死んだ相手への送信は害なく消え、生きた側の経路で巡回が続く。</figcaption>
+</figure>
+
+<h3>3b. クラスタ間 = ゲートを繋ぐブリッジ (既定 ON)</h3>
+<figure>
+<svg viewBox="0 0 880 250" role="img" aria-label="ブリッジ比較">
+  <defs>
+    <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <!-- 左: no-bridge -->
+  <g>
+    <text x="215" y="30" text-anchor="middle" font-size="13" font-weight="600" class="t-mono">--no-bridge</text>
+    <circle cx="130" cy="105" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <circle cx="300" cy="105" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <circle cx="215" cy="195" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <text x="130" y="110" text-anchor="middle" font-size="12" font-weight="600">A ⟲</text>
+    <text x="300" y="110" text-anchor="middle" font-size="12" font-weight="600">B ⟲</text>
+    <text x="215" y="200" text-anchor="middle" font-size="12" font-weight="600">C ⟲</text>
+    <text x="215" y="50" text-anchor="middle" font-size="10.5" class="t-soft">独立した会話。センサー未割当の</text>
+    <text x="215" y="64" text-anchor="middle" font-size="10.5" class="t-soft">クラスタは自発生成だけの孤島に</text>
+  </g>
+  <!-- 右: bridge (既定) -->
+  <g>
+    <text x="660" y="30" text-anchor="middle" font-size="13" font-weight="600">既定: ブリッジあり (一つの森)</text>
+    <circle cx="575" cy="105" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <circle cx="745" cy="105" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <circle cx="660" cy="195" r="38" fill="none" stroke="var(--ink)" stroke-width="1.3"/>
+    <text x="575" y="110" text-anchor="middle" font-size="12" font-weight="600">A ⟲</text>
+    <text x="745" y="110" text-anchor="middle" font-size="12" font-weight="600">B ⟲</text>
+    <text x="660" y="200" text-anchor="middle" font-size="12" font-weight="600">C ⟲</text>
+    <line class="edge-moss" x1="615" y1="102" x2="705" y2="102" marker-end="url(#ah4)"/>
+    <path class="edge-moss" d="M 733 140 C 718 162, 702 175, 692 182" marker-end="url(#ah4)"/>
+    <path class="edge-moss" d="M 628 182 C 610 168, 595 152, 586 141" marker-end="url(#ah4)"/>
+    <text x="660" y="50" text-anchor="middle" font-size="10.5" class="t-soft">ゲート → 隣クラスタのゲートへ一方向環。</text>
+    <text x="660" y="64" text-anchor="middle" font-size="10.5" class="t-soft">ある茂みの言葉が別の茂みから聞こえてくる</text>
+  </g>
+</svg>
+<figcaption>図4 — ブリッジの有無はフラグ 1 つ (<code>--no-bridge</code>)。センサー 1-2 個の構成では
+ブリッジありが既定 (揺らぎが 50 台全体へ波及する)。現場で聴き比べて切り替え可能。</figcaption>
+</figure>
+
+<h2>4. トークンリレー — 言葉は数を数えながら旅をする</h2>
+<p>
+  デバイス間を流れるメッセージは 1 種類だけ: <code>/bi/input [text, soft_prefix_b64, relay_count]</code>。
+  受け取った言葉は捨てられず、次の生成の材料に混ざる。<code>relay_count</code> が上限に達すると静かに消える。
+</p>
+<figure>
+<svg viewBox="0 0 880 175" role="img" aria-label="リレーのライフサイクル">
+  <defs>
+    <marker id="ah5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <rect class="box-moss" x="15" y="45" width="170" height="80"/>
+  <text x="100" y="70" text-anchor="middle" font-size="12" font-weight="600">device 23 が生成</text>
+  <text x="100" y="90" text-anchor="middle" font-size="11" class="t-soft">「光は夜は…」</text>
+  <text x="100" y="110" text-anchor="middle" font-size="10.5" class="t-mono">relay_count = 0</text>
+  <rect class="box" x="240" y="45" width="180" height="80"/>
+  <text x="330" y="66" text-anchor="middle" font-size="12" font-weight="600">device 31 が受信</text>
+  <text x="330" y="85" text-anchor="middle" font-size="10.5" class="t-soft">バッファに追加 (count+1)</text>
+  <text x="330" y="101" text-anchor="middle" font-size="10.5" class="t-soft">→ 材料に混ぜて再生成</text>
+  <text x="330" y="118" text-anchor="middle" font-size="10.5" class="t-mono">relay_count = 1</text>
+  <rect class="box" x="475" y="45" width="130" height="80"/>
+  <text x="540" y="72" text-anchor="middle" font-size="12" font-weight="600">device 42 …</text>
+  <text x="540" y="95" text-anchor="middle" font-size="10.5" class="t-mono">relay_count = 2</text>
+  <text x="648" y="90" font-size="16" class="t-soft">…</text>
+  <rect x="690" y="45" width="175" height="80" rx="8" fill="#F7E9E9" stroke="var(--danger)" stroke-width="1.3"/>
+  <text x="777" y="72" text-anchor="middle" font-size="12" font-weight="600" fill="var(--danger)">count ≥ 12 で破棄</text>
+  <text x="777" y="92" text-anchor="middle" font-size="10.5" class="t-soft">max_relay_count</text>
+  <text x="777" y="110" text-anchor="middle" font-size="10.5" class="t-soft">= 言葉の寿命</text>
+  <line class="edge" x1="185" y1="85" x2="234" y2="85" marker-end="url(#ah5)"/>
+  <line class="edge" x1="420" y1="85" x2="469" y2="85" marker-end="url(#ah5)"/>
+  <line class="edge" x1="605" y1="85" x2="684" y2="85" marker-end="url(#ah5)"/>
+  <text x="440" y="155" text-anchor="middle" font-size="11" class="t-soft">言葉は伝わるたびに変形される (コピーではなく再生成)。12 世代で寿命を迎え、森は静かに入れ替わり続ける。</text>
+</svg>
+<figcaption>図5 — リレーのライフサイクル。<code>bi/controller.py add_input()</code> が
+counter を +1 し、<code>cycle.max_relay_count</code> (=12) 以上を破棄する。
+バッファ内の最小 count を引き継ぐので、新鮮な言葉が混ざるほど寿命は延びる。</figcaption>
+</figure>
+
+<h2>5. 1 台のデバイスの中 — 4 相サイクルと声の生成</h2>
+<figure>
+<svg viewBox="0 0 880 330" role="img" aria-label="デバイス内部サイクル">
+  <defs>
+    <marker id="ah6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <!-- 左: 4相ループ -->
+  <g>
+    <text x="185" y="28" text-anchor="middle" font-size="13" font-weight="600">フェーズループ (bi/controller.py)</text>
+    <rect class="box-moss" x="60" y="50" width="115" height="52"/>
+    <text x="117" y="72" text-anchor="middle" font-size="11.5" font-weight="600">RECEIVING</text>
+    <text x="117" y="90" text-anchor="middle" font-size="10" class="t-soft">3 秒 聞く</text>
+    <rect class="box" x="230" y="50" width="120" height="52"/>
+    <text x="290" y="72" text-anchor="middle" font-size="11.5" font-weight="600">GENERATING</text>
+    <text x="290" y="90" text-anchor="middle" font-size="10" class="t-soft">LLM が言葉を紡ぐ</text>
+    <rect class="box" x="230" y="160" width="120" height="52"/>
+    <text x="290" y="182" text-anchor="middle" font-size="11.5" font-weight="600">OUTPUT</text>
+    <text x="290" y="200" text-anchor="middle" font-size="10" class="t-soft">発話 + リレー送信</text>
+    <rect class="box" x="60" y="160" width="115" height="52"/>
+    <text x="117" y="182" text-anchor="middle" font-size="11.5" font-weight="600">RESTING</text>
+    <text x="117" y="200" text-anchor="middle" font-size="10" class="t-soft">休む → 先頭へ</text>
+    <line class="edge" x1="175" y1="76" x2="224" y2="76" marker-end="url(#ah6)"/>
+    <line class="edge" x1="290" y1="102" x2="290" y2="154" marker-end="url(#ah6)"/>
+    <line class="edge" x1="230" y1="186" x2="181" y2="186" marker-end="url(#ah6)"/>
+    <line class="edge" x1="117" y1="160" x2="117" y2="108" marker-end="url(#ah6)"/>
+    <!-- idle -->
+    <rect class="box-dash" x="60" y="250" width="290" height="52"/>
+    <text x="205" y="272" text-anchor="middle" font-size="11" class="t-soft">入力ゼロが 4-8 サイクル続いたら種文を自己注入</text>
+    <text x="205" y="290" text-anchor="middle" font-size="10" class="t-soft">(idle_generation — 森は無入力でも黙らない)</text>
+    <path class="edge-soft" d="M 355 276 C 400 276, 400 190, 356 178" marker-end="url(#ah6)"/>
+  </g>
+  <!-- 右: 声のパイプライン -->
+  <g>
+    <text x="655" y="28" text-anchor="middle" font-size="13" font-weight="600">OUTPUT の中身 (声ができるまで)</text>
+    <rect class="box" x="475" y="50" width="360" height="44"/>
+    <text x="655" y="68" text-anchor="middle" font-size="11.5" font-weight="600">LLM: TinySwallow-1.5B + soft_prefix 注入</text>
+    <text x="655" y="85" text-anchor="middle" font-size="10" class="t-soft">受信バッファを連結して続きを生成 (揺らぎ = センサー由来)</text>
+    <rect class="box" x="475" y="114" width="360" height="44"/>
+    <text x="655" y="132" text-anchor="middle" font-size="11.5" font-weight="600">TTS: NPU 上のニューラル音声合成</text>
+    <text x="655" y="149" text-anchor="middle" font-size="10" class="t-mono t-soft">melotts-ja-jp ⇄ melotts-alien-x1-a07 (config 1 行で切替)</text>
+    <rect class="box-alien" x="475" y="178" width="360" height="44"/>
+    <text x="655" y="196" text-anchor="middle" font-size="11.5" font-weight="600">FX: Accumulating Ghosts チェーン</text>
+    <text x="655" y="213" text-anchor="middle" font-size="10" class="t-soft">分割 → ゴースト蓄積 → リバーブ → EQ → コンプ → 0.8 倍速</text>
+    <rect class="box" x="475" y="242" width="360" height="44"/>
+    <text x="655" y="260" text-anchor="middle" font-size="11.5" font-weight="600">再生: aplay (dmix) — 待機音と重なって鳴る</text>
+    <text x="655" y="277" text-anchor="middle" font-size="10" class="t-soft">待機音 = 環境音ループ + 声系オーバーレイ (mixed モード)</text>
+    <line class="edge" x1="655" y1="94" x2="655" y2="108" marker-end="url(#ah6)"/>
+    <line class="edge" x1="655" y1="158" x2="655" y2="172" marker-end="url(#ah6)"/>
+    <line class="edge" x1="655" y1="222" x2="655" y2="236" marker-end="url(#ah6)"/>
+  </g>
+</svg>
+<figcaption>図6 — デバイス内部。左のループが心拍、右が OUTPUT 相の声の生成経路。
+soft_prefix はセンサーの信号強度に応じた 4 段階の値で、LLM の生成に「揺らぎの性格」として注入される。
+TTS のモデル名を差し替えるだけで全 FX がそのまま α=0.7 (異種声) にも載る (聴き比べ検証済み)。</figcaption>
+</figure>
+
+<h2>6. センサー → soft_prefix — 植物の信号が言葉の揺らぎになる</h2>
+<table>
+<thead><tr><th>段階</th><th>処理</th><th>実体</th></tr></thead>
+<tbody>
+<tr><td>1. 計測</td><td>センサーが植物の信号を拾う (AE / マイク RMS など、種別は確定待ち)</td><td>ハブ PC に入力</td></tr>
+<tr><td>2. 正規化</td><td>キャリブレーション期間の中央値でスケール → 0-1 の強度に</td><td><code>input_controller</code></td></tr>
+<tr><td>3. 量子化</td><td>閾値 0.25 / 0.5 / 0.75 で 4 段階 <code>[0, 0.1, 1, 10]</code> の soft_prefix 値に</td><td><code>soft_prefix.py</code></td></tr>
+<tr><td>4. 送信</td><td>種文 (詩句) と束ねて、割当クラスタのゲートへ OSC 送信</td><td><code>/bi/input</code>, count=0</td></tr>
+<tr><td>5. 伝播</td><td>ゲートから先はリレー任せ — 揺らぎがクラスタを越えて広がる</td><td>図4-5</td></tr>
+</tbody>
+</table>
+<div class="note">
+  soft_prefix 値の意味: <strong>0 = 揺らぎなし (整った言葉) → 10 = 強い揺らぎ (壊れた言葉)</strong>。
+  植物の信号が強い瞬間ほど、森の言葉が乱れる。センサー→クラスタの割当は config で持ち、
+  「センサー A は東の茂みに、B は西に効く」のような対応を作れる (実装は次工程)。
+</div>
+
+<h2>7. 運用 — 手で触るのは 1 ファイル、あとは 3 コマンド</h2>
+<figure>
+<svg viewBox="0 0 880 130" role="img" aria-label="運用フロー">
+  <defs>
+    <marker id="ah7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <rect class="box" x="15" y="30" width="128" height="60"/>
+  <text x="79" y="55" text-anchor="middle" font-size="11" font-weight="600">① 全台チェック</text>
+  <text x="79" y="74" text-anchor="middle" font-size="9.5" class="t-soft">稼働 ID 確定 (8/21)</text>
+  <rect class="box-moss" x="163" y="30" width="128" height="60"/>
+  <text x="227" y="55" text-anchor="middle" font-size="11" font-weight="600">② map 記入</text>
+  <text x="227" y="74" text-anchor="middle" font-size="9.5" class="t-mono t-soft">cluster_map.csv</text>
+  <rect class="box" x="311" y="30" width="128" height="60"/>
+  <text x="375" y="55" text-anchor="middle" font-size="11" font-weight="600">③ 生成</text>
+  <text x="375" y="74" text-anchor="middle" font-size="9.5" class="t-mono t-soft">generate_networks</text>
+  <rect class="box" x="459" y="30" width="128" height="60"/>
+  <text x="523" y="55" text-anchor="middle" font-size="11" font-weight="600">④ 照合</text>
+  <text x="523" y="74" text-anchor="middle" font-size="9.5" class="t-mono t-soft">--dry-run</text>
+  <rect class="box" x="607" y="30" width="128" height="60"/>
+  <text x="671" y="55" text-anchor="middle" font-size="11" font-weight="600">⑤ 同期+再起動</text>
+  <text x="671" y="74" text-anchor="middle" font-size="9.5" class="t-mono t-soft">--reboot</text>
+  <rect class="box" x="755" y="30" width="110" height="60"/>
+  <text x="810" y="55" text-anchor="middle" font-size="11" font-weight="600">⑥ 監視確認</text>
+  <text x="810" y="74" text-anchor="middle" font-size="9.5" class="t-soft">relay depth</text>
+  <line class="edge" x1="143" y1="60" x2="157" y2="60" marker-end="url(#ah7)"/>
+  <line class="edge" x1="291" y1="60" x2="305" y2="60" marker-end="url(#ah7)"/>
+  <line class="edge" x1="439" y1="60" x2="453" y2="60" marker-end="url(#ah7)"/>
+  <line class="edge" x1="587" y1="60" x2="601" y2="60" marker-end="url(#ah7)"/>
+  <line class="edge" x1="735" y1="60" x2="749" y2="60" marker-end="url(#ah7)"/>
+  <text x="440" y="115" text-anchor="middle" font-size="10.5" class="t-soft">故障交換は ②→③→⑤ の 3 手順だけ。電源 ON で全系統が自動復帰 (autostart、コールドブート実証済み)。</text>
+</svg>
+<figcaption>図7 — 運用フロー。デバイスは reboot 必須 (StackFlow の setup ロック回避)。
+同期スクリプトは自動発見と map を照合し、不一致があれば止まる。</figcaption>
+</figure>
+
+<h2>8. ファイルと役割</h2>
+<table>
+<thead><tr><th>ファイル</th><th>役割</th><th>誰が書くか</th></tr></thead>
+<tbody>
+<tr><td><code>config/cluster_map_mans.csv</code></td><td>ID → クラスタ割当。<strong>設計の唯一の正本</strong></td><td>人間 (手編集)</td></tr>
+<tr><td><code>tools/generate_networks_mans.py</code></td><td>map → networks CSV 生成 + validator (重複/範囲外/到達性)</td><td>—</td></tr>
+<tr><td><code>config/networks_mans.csv</code></td><td>生成物。各デバイスの送信先 (<code>To</code>)。CCBT 互換 100 行形式</td><td>自動生成</td></tr>
+<tr><td><code>tools/bi_set_clusters.sh</code></td><td>ハブから全台へ同期 (自動発見 → 照合 → push+md5 → reboot)</td><td>—</td></tr>
+<tr><td><code>main.py</code> / <code>bi/controller.py</code></td><td>デバイス側本体 (ID 自己解決 / 4 相サイクル / リレー)。<strong>無改変</strong></td><td>—</td></tr>
+</tbody>
+</table>
+
+<h2>9. 主要パラメタ</h2>
+<table>
+<thead><tr><th>パラメタ</th><th>値</th><th>意味</th></tr></thead>
+<tbody>
+<tr><td><code>cycle.receive_duration</code></td><td>3.0 秒</td><td>聞く時間 (1 サイクルの呼吸)</td></tr>
+<tr><td><code>cycle.max_relay_count</code></td><td>12</td><td>言葉の寿命 (世代数)</td></tr>
+<tr><td><code>osc.receive_port</code></td><td>8000</td><td>全デバイス共通の受信ポート</td></tr>
+<tr><td>soft_prefix 値域</td><td>[0, 0.1, 1, 10]</td><td>揺らぎ 4 段階 (閾値 0.25/0.5/0.75)</td></tr>
+<tr><td><code>idle_generation</code></td><td>4-8 サイクル</td><td>無入力時に種文を自己注入するまでの間隔</td></tr>
+<tr><td>TTS モデル</td><td>ja ⇄ alien</td><td>config 化予定 (焼成 1 回で全台配布可)</td></tr>
+</tbody>
+</table>
+
+<div class="warn">
+  <strong>未実装 (次工程)</strong>: ①センサー→クラスタ割当の config とハブ側送信 (<code>run_voice_mans.py</code>)
+  ②TTS モデル名の config 化 ③時刻ベースの音量スケジューラ (日中小音量・夜間極小 = 対外約束)。
+  実装・検証済み = トポロジー層 (図3-4, 7) + <strong>モニター (cluster_map 駆動化・RUN の systemd 化・
+  ハブ PC と 1 台に統合)</strong>。
+</div>
+
+<footer>
+  <p>正本: <code>BotanicalIntelligence/code/docs/mans-deployment-logic.html</code> /
+  トポロジー実装 = <code>tools/generate_networks_mans.py</code> + <code>tools/bi_set_clusters.sh</code> (検証ログはセッション記録参照)。
+  下地 = CCBT『平行森林』コードベース + 前回 5 台展開で確立した運用 (双方向リング depth 4-5・autostart・コールドブート復帰)。</p>
+</footer>
+
+</div>
+</body>
+</html>

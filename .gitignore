@@ -16,3 +16,12 @@ code/input_controller/run_voice_glo.py
 # Scratch verification probe (marked local-only in its own docstring).
 # The rest of code/tools/bi-check/ is tracked.
 code/tools/bi-check/probe_soft_prefix.py
+
+# Per-device audio check WAVs (~20MB, deployment material - not part of the codebase).
+code/bi_audio_check/
+
+# MANS cluster map holds the real device IDs filled in on site; example is tracked.
+code/config/cluster_map_mans.csv
+
+# Monitor runtime logs, generated per run on the host.
+code/logs/
