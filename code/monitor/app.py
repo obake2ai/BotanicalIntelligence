@@ -15,6 +15,7 @@ from pythonosc import udp_client
 import paramiko
 import threading, time, subprocess, getpass
 import os
+import sys
 import platform
 import shutil
 import bi_logger
@@ -47,7 +48,7 @@ _SOUND_AWARE = (
 )
 SOUND_CMD   = os.environ.get("BI_SOUND_CMD", _SOUND_AWARE)
 LED_SERVER_SESSION = "bi_led_srv"
-LED_SERVER_CMD = f"cd {GIT_DIR} && uv run python pca9685_osc_led_server.py --port {OSC_PORT}"
+LED_SERVER_CMD = f"cd {GIT_DIR} && .venv/bin/python3 pca9685_osc_led_server.py --port {OSC_PORT}"
 LED_STEPS   = 40
 LED_UP_SEC  = 2.0
 LED_DN_SEC  = 2.0
@@ -111,7 +112,7 @@ TMUX_CONF = {
         "session": "bi_main",
         # 2>&1 | tee でファイルにも書き出す → tmux スクロールバック依存を回避
         # tee -a で追記モード（再起動時も続きから読める）
-        "cmd": f"cd {GIT_DIR} && uv run python main.py 2>&1 | tee -a {RUN_LOG_FILE}",
+        "cmd": f"cd {GIT_DIR} && .venv/bin/python3 main.py 2>&1 | tee -a {RUN_LOG_FILE}",
     },
     "llm": {
         "session": "bi_llm",
@@ -119,7 +120,7 @@ TMUX_CONF = {
     },
     "tts": {
         "session": "bi_tts",
-        "cmd": f"cd {GIT_DIR} && uv run python scripts/check_tts.py",
+        "cmd": f"cd {GIT_DIR} && .venv/bin/python3 scripts/check_tts.py",
     },
 }
 SEND_SCRIPT = os.environ.get(
@@ -456,7 +457,7 @@ def _led_worker(num):
             ssh_run(ip,
                 f"tmux new-session -d -s {LED_SERVER_SESSION}", timeout=10)
             ssh_run(ip,
-                f"tmux send-keys -t {LED_SERVER_SESSION} 'cd {GIT_DIR} && uv run python pca9685_osc_led_server.py --port {OSC_PORT}' Enter", timeout=10)
+                f"tmux send-keys -t {LED_SERVER_SESSION} 'cd {GIT_DIR} && .venv/bin/python3 pca9685_osc_led_server.py --port {OSC_PORT}' Enter", timeout=10)
             time.sleep(2)
 
         set_job(page, num, "running", "fade up...")
@@ -746,7 +747,7 @@ def api_send_test():
     num = int(d.get("num", 1))
     text = d.get("text", "")
     try:
-        r = subprocess.run(["python3", SEND_SCRIPT, "-H", node_ip(num), "-t", text],
+        r = subprocess.run([sys.executable, SEND_SCRIPT, "-H", node_ip(num), "-t", text],
             capture_output=True, text=True, timeout=15)
         ok = r.returncode == 0
         bi_logger.log_run_test_input(num, text, ok, r.stdout.strip(), r.stderr.strip())
@@ -781,7 +782,7 @@ def api_send_test_batch():
             entry = {"num": num, "ok": False, "stdout": "", "stderr": ""}
             try:
                 r = subprocess.run(
-                    ["python3", SEND_SCRIPT, "-H", node_ip(num), "-t", text],
+                    [sys.executable, SEND_SCRIPT, "-H", node_ip(num), "-t", text],
                     capture_output=True, text=True, timeout=15,
                 )
                 entry["ok"] = r.returncode == 0

@@ -1,5 +1,7 @@
 import asyncio
 import os
+import shlex
+import signal
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -76,10 +78,7 @@ class BIController:
             self._pulse_task.cancel()
         # Kill waiting audio if running
         if self._waiting_proc is not None:
-            try:
-                self._waiting_proc.kill()
-            except Exception:
-                pass
+            self._terminate_waiting_proc(self._waiting_proc, hard=True)
         if self._waiting_loop_task and not self._waiting_loop_task.done():
             self._waiting_loop_task.cancel()
 
@@ -285,6 +284,45 @@ class BIController:
 
     # ========== Waiting audio loop ==========
 
+    def _terminate_waiting_proc(self, proc, hard: bool = False):
+        """Terminate a waiting/overlay proc. Pipelines started with setsid
+        (bi_pgroup flag) are killed as a whole process group so the orphaned
+        aplay cannot keep playing."""
+        sig = signal.SIGKILL if hard else signal.SIGTERM
+        if getattr(proc, "bi_pgroup", False):
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+                return
+            except Exception:
+                pass
+        try:
+            proc.kill() if hard else proc.terminate()
+        except Exception:
+            pass
+
+    def _prepare_raw_files(self, files: list, sample_rate: int, channels: int) -> list:
+        """Convert wav files to headerless raw PCM (<file>.raw) for gapless
+        stdin streaming. Returns [] if ffmpeg is unavailable or any conversion
+        fails (caller falls back to the per-file aplay loop)."""
+        raws = []
+        for f in files:
+            if not str(f).endswith(".wav"):
+                return []
+            raw = str(f)[:-4] + ".raw"
+            if not os.path.isfile(raw) or os.path.getmtime(raw) < os.path.getmtime(f):
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(f),
+                         "-f", "s16le", "-acodec", "pcm_s16le",
+                         "-ar", str(sample_rate), "-ac", str(channels), raw],
+                        check=True, timeout=120,
+                    )
+                except Exception as e:
+                    logger.warning(f"raw conversion failed for {f}: {e}")
+                    return []
+            raws.append(raw)
+        return raws
+
     def _collect_waiting_files(self, waiting_dir: str, prefix: str) -> list:
         """Glob {prefix}*.wav / {prefix}*.mp3 under waiting_dir, sorted."""
         import glob
@@ -436,8 +474,46 @@ class BIController:
         return playable
 
     async def _waiting_loop(self, files: list, playback_device: str):
-        """Keep playing random waiting audio until cancelled."""
+        """Keep playing random waiting audio until cancelled.
+
+        With an aplay playback_device, stream raw PCM from an endless cat loop
+        into a single aplay process -> gapless between iterations (the per-file
+        respawn used to leave an audible hole every loop)."""
         import random
+
+        audio_cfg = self.config.get("audio", {})
+        sr = audio_cfg.get("sample_rate", 48000)
+        ch = audio_cfg.get("channels", 2)
+        raws = []
+        if playback_device:
+            raws = await asyncio.to_thread(self._prepare_raw_files, files, sr, ch)
+
+        if raws:
+            cat_loop = "while :; do " + " ".join(f"cat {shlex.quote(r)};" for r in raws) + " done"
+            pipeline = (
+                f"{cat_loop} | aplay -D {shlex.quote(playback_device)} "
+                f"-t raw -f S16_LE -r {sr} -c {ch} -q -"
+            )
+            logger.info(f"Gapless waiting audio: {len(raws)} raw file(s) -> single aplay stream")
+            try:
+                while True:
+                    proc = await asyncio.to_thread(
+                        lambda: subprocess.Popen(
+                            ["sh", "-c", pipeline],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            preexec_fn=os.setsid,
+                        )
+                    )
+                    proc.bi_pgroup = True
+                    self._waiting_proc = proc
+                    ret = await asyncio.to_thread(proc.wait)
+                    self._waiting_proc = None
+                    stderr = proc.stderr.read().decode(errors="replace").strip()
+                    logger.warning(f"Gapless waiting stream exited (rc={ret}): {stderr}")
+                    await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                logger.debug("Waiting audio loop cancelled")
+                raise
 
         try:
             while True:
@@ -526,14 +602,12 @@ class BIController:
 
         # Kill the currently playing process immediately
         if self._waiting_proc is not None:
+            proc = self._waiting_proc
+            self._terminate_waiting_proc(proc)
             try:
-                self._waiting_proc.terminate()
-                await asyncio.to_thread(self._waiting_proc.wait)
+                await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=5.0)
             except Exception:
-                try:
-                    self._waiting_proc.kill()
-                except Exception:
-                    pass
+                self._terminate_waiting_proc(proc, hard=True)
             self._waiting_proc = None
 
         # Wait for the task to finish

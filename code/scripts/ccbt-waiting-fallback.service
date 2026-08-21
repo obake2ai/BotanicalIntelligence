@@ -1,0 +1,12 @@
+[Unit]
+Description=BI waiting-audio fallback (plays waiting audio while main.py is down)
+After=multi-user.target ccbt-audio-keepalive.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /root/dev/CCBT-2025-Parallel-Botanical-Garden-Proto/scripts/waiting_fallback.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -509,8 +509,10 @@ class StackFlowTTSClient:
 
     def set_params(self, config: dict):
         lang = config.get("common").get("lang")
-        # TTS always uses Japanese model regardless of LLM language
-        self.model = TTS_SETTINGS.get("ja").get("model")
+        # TTS always uses Japanese model regardless of LLM language.
+        # config.json stack_flow_tts.model overrides the default (e.g. "melotts-alien-x1-a07");
+        # the model's mode json must be registered with llm-openai-api on the device.
+        self.model = config.get("stack_flow_tts", {}).get("model") or TTS_SETTINGS.get("ja").get("model")
 
         logger.info("[TTS info]")
         logger.info(f"lang: {lang} (TTS forced to ja)")
