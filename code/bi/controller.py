@@ -497,13 +497,22 @@ class BIController:
             logger.info(f"Gapless waiting audio: {len(raws)} raw file(s) -> single aplay stream")
             try:
                 while True:
-                    proc = await asyncio.to_thread(
-                        lambda: subprocess.Popen(
-                            ["sh", "-c", pipeline],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                            preexec_fn=os.setsid,
+                    try:
+                        # start_new_session (not preexec_fn!) keeps CPython's
+                        # vfork path usable -- preexec_fn forces a classic
+                        # fork of the whole ~580MB process, which ENOMEMs on
+                        # the 1.4GB devices once the LLM/TTS have grown RSS.
+                        proc = await asyncio.to_thread(
+                            lambda: subprocess.Popen(
+                                ["sh", "-c", pipeline],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                start_new_session=True,
+                            )
                         )
-                    )
+                    except OSError as e:
+                        logger.warning(f"Gapless waiting spawn failed ({e}); retrying in 5s")
+                        await asyncio.sleep(5.0)
+                        continue
                     proc.bi_pgroup = True
                     self._waiting_proc = proc
                     ret = await asyncio.to_thread(proc.wait)
